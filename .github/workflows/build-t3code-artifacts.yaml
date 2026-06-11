@@ -81,15 +81,13 @@ jobs:
       release_tag: ${{ steps.tag.outputs.release_tag }}
       artifact_tag: ${{ steps.tag.outputs.artifact_tag }}
     steps:
-      - name: Checkout repository (with submodules)
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # Non-recursive on purpose: the t3code fork carries an orphan nested
-          # gitlink at .repos/alchemy-effect/.vendor/alchemy whose URL is only
-          # declared in .repos/alchemy-effect/.gitmodules (not the submodule
-          # root), so `recursive` fails with "No url found for submodule path".
-          # The .repos are reference-only and unneeded by the build.
-          submodules: true
+        # submodules intentionally not fetched here — see the explicit
+        # non-recursive init below for why (orphan nested gitlink in the fork).
+
+      - name: Fetch vendor-t3code submodule (non-recursive)
+        run: git submodule update --init --depth=1 vendor-t3code
 
       - name: Determine release tag
         id: tag
@@ -135,15 +133,13 @@ jobs:
       TARBALL_NAME: t3code-server-linux-${{ matrix.arch }}.tar.gz
 
     steps:
-      - name: Checkout repository (with submodules)
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # Non-recursive on purpose: the t3code fork carries an orphan nested
-          # gitlink at .repos/alchemy-effect/.vendor/alchemy whose URL is only
-          # declared in .repos/alchemy-effect/.gitmodules (not the submodule
-          # root), so `recursive` fails with "No url found for submodule path".
-          # The .repos are reference-only and unneeded by the build.
-          submodules: true
+        # submodules intentionally not fetched here — see the explicit
+        # non-recursive init below for why (orphan nested gitlink in the fork).
+
+      - name: Fetch vendor-t3code submodule (non-recursive)
+        run: git submodule update --init --depth=1 vendor-t3code
 
       - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
