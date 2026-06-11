@@ -128,41 +128,45 @@ func environmentEndpoint(env Environment) map[string]string {
 
 func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Request) error {
 	envs := a.app.ListEnvironments()
+	// Shape MUST match contracts RelayClientEnvironmentRecord exactly
+	// (packages/contracts/src/relay.ts): { environmentId, label (non-empty),
+	// endpoint (RelayManagedEndpoint), linkedAt (non-empty) }. The client
+	// decodes this with Effect Schema, so a missing required field — or an
+	// empty label/linkedAt — fails the decode. Per-environment status/platform
+	// are NOT part of this record; the client reads those from the /status
+	// endpoint.
 	type envRecord struct {
 		EnvironmentID string            `json:"environmentId"`
 		Label         string            `json:"label"`
-		Status        string            `json:"status"`
 		Endpoint      map[string]string `json:"endpoint"`
-		Platform      any               `json:"platform,omitempty"`
-		ServerVersion string            `json:"serverVersion,omitempty"`
-		LastSeen      int64             `json:"lastSeen"`
+		LinkedAt      string            `json:"linkedAt"`
 	}
 	records := make([]envRecord, 0, len(envs))
 	for _, e := range envs {
-		rec := envRecord{
-			EnvironmentID: e.ID,
-			Status:        e.Status,
-			Endpoint:      environmentEndpoint(e),
-			LastSeen:      e.LastSeen,
-		}
-		// parse probe_json for label/platform/serverVersion
+		label := ""
+		// Prefer the probe-reported label, fall back to the container name,
+		// then the environment id, so label is never empty (contract requires
+		// a non-empty trimmed string).
 		if e.ProbeJSON != "" {
 			var pr probeResult
 			if err := json.Unmarshal([]byte(e.ProbeJSON), &pr); err == nil {
-				rec.Label = pr.Label
-				rec.ServerVersion = pr.ServerVersion
-				if pr.Platform != nil {
-					var p any
-					if err := json.Unmarshal(pr.Platform, &p); err == nil {
-						rec.Platform = p
-					}
-				}
+				label = strings.TrimSpace(pr.Label)
 			}
 		}
-		if rec.Label == "" {
-			rec.Label = e.Name
+		if label == "" {
+			label = strings.TrimSpace(e.Name)
 		}
-		records = append(records, rec)
+		if label == "" {
+			label = e.ID
+		}
+		// linkedAt = first time we discovered the environment (RFC3339, non-empty).
+		linkedAt := time.Unix(e.FirstSeen, 0).UTC().Format(time.RFC3339)
+		records = append(records, envRecord{
+			EnvironmentID: e.ID,
+			Label:         label,
+			Endpoint:      environmentEndpoint(e),
+			LinkedAt:      linkedAt,
+		})
 	}
 	return writeJSON(w, http.StatusOK, map[string]any{"environments": records})
 }
@@ -193,15 +197,20 @@ func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Requ
 	env.LastSeen = time.Now().Unix()
 	_ = a.app.GetStore().Upsert(env)
 
+	// descriptor must match contracts ExecutionEnvironmentDescriptor exactly
+	// (environmentId, label, platform, serverVersion, capabilities). The
+	// server's probe response already IS that shape, so pass the raw JSON
+	// through unmodified rather than a lossy typed re-marshal (probeResult
+	// omits capabilities). descriptor is optional, so leave it unset if the
+	// probe body didn't parse.
 	var descriptor any
-	if pr != nil {
-		descriptor = pr
-	} else if rawBody != "" {
+	if rawBody != "" {
 		var d any
 		if err := json.Unmarshal([]byte(rawBody), &d); err == nil {
 			descriptor = d
 		}
 	}
+	_ = pr // parsed form retained by probeEnvironment; raw body used for the wire
 
 	resp := map[string]any{
 		"environmentId": env.ID,
