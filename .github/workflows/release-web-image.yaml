@@ -35,9 +35,15 @@ jobs:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
-          # vendor-t3code is a git submodule; recursive checkout is required
-          # so the web app source is present when Docker builds.
-          submodules: recursive
+          # vendor-t3code is a git submodule; check it out so the web app
+          # source is present when Docker builds. Use non-recursive (`true`,
+          # not `recursive`): the t3code fork carries an orphan nested gitlink
+          # at .repos/alchemy-effect/.vendor/alchemy (its URL lives in
+          # .repos/alchemy-effect/.gitmodules, not the submodule root), which
+          # makes `recursive` fail with "No url found for submodule path".
+          # Those .repos are reference-only repos that the web build (pnpm
+          # workspace apps/web) never needs.
+          submodules: true
 
       - name: Set up QEMU (for cross-arch emulation)
         uses: docker/setup-qemu-action@v3

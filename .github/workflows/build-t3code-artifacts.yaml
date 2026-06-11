@@ -84,7 +84,12 @@ jobs:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Non-recursive on purpose: the t3code fork carries an orphan nested
+          # gitlink at .repos/alchemy-effect/.vendor/alchemy whose URL is only
+          # declared in .repos/alchemy-effect/.gitmodules (not the submodule
+          # root), so `recursive` fails with "No url found for submodule path".
+          # The .repos are reference-only and unneeded by the build.
+          submodules: true
 
       - name: Determine release tag
         id: tag
@@ -133,7 +138,12 @@ jobs:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Non-recursive on purpose: the t3code fork carries an orphan nested
+          # gitlink at .repos/alchemy-effect/.vendor/alchemy whose URL is only
+          # declared in .repos/alchemy-effect/.gitmodules (not the submodule
+          # root), so `recursive` fails with "No url found for submodule path".
+          # The .repos are reference-only and unneeded by the build.
+          submodules: true
 
       - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
