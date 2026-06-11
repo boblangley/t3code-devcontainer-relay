@@ -15,6 +15,14 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /src
 
+# ca-certificates is required: the web build runs on vite-plus ("vp"), a Rust
+# binary that initializes an HTTP client against the SYSTEM cert store at
+# startup. The -slim image ships no CA bundle, so vp panics with
+# "No CA certificates were loaded from the system" (SIGABRT / exit 134).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Enable the pinned pnpm via corepack (root packageManager = pnpm@10.24.0).
 RUN corepack enable
 
