@@ -1,6 +1,6 @@
 {
   "id": "t3code-server",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "name": "T3Code Server (forked, bearer-auth)",
   "description": "Installs and supervises the forked T3Code server (bearer-auth branch) inside a devcontainer. The server listens on 0.0.0.0:<port> and validates inbound relay requests via a shared-secret file bind-mounted from the host.",
   "documentationURL": "https://github.com/boblangley/t3code-devcontainer-relay/tree/main/features/src/t3code-server",

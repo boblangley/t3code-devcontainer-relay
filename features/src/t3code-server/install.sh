@@ -20,6 +20,13 @@ set -e
 err() { echo "ERROR [t3code-server feature]: $*" >&2; exit 1; }
 info() { echo "INFO  [t3code-server feature]: $*"; }
 
+# Preserve feature options before sourcing /etc/os-release below. Ubuntu's
+# os-release defines VERSION="24.04.x LTS (...)", which would otherwise
+# overwrite the devcontainer feature's `version` option.
+FEATURE_VERSION="${VERSION:-latest}"
+FEATURE_PORT="${PORT:-3773}"
+FEATURE_SECRETPATH="${SECRETPATH:-/run/t3code/relay-secret}"
+
 # ---------------------------------------------------------------------------
 # Guard 1: Ubuntu noble (24.04) only
 # ---------------------------------------------------------------------------
@@ -52,9 +59,9 @@ info "Node check passed: ${NODE_VERSION}"
 # Resolve options (devcontainer CLI uppercases option ids)
 # ---------------------------------------------------------------------------
 
-VERSION="${VERSION:-latest}"
-PORT="${PORT:-3773}"
-SECRETPATH="${SECRETPATH:-/run/t3code/relay-secret}"
+VERSION="${FEATURE_VERSION}"
+PORT="${FEATURE_PORT}"
+SECRETPATH="${FEATURE_SECRETPATH}"
 
 info "Installing t3code-server version='${VERSION}' port='${PORT}' secretPath='${SECRETPATH}'"
 
@@ -81,9 +88,10 @@ info "Target architecture: ${ARCH}"
 #                  or the floating alias "latest"
 #   Asset name:    t3code-server-linux-<arch>.tar.gz
 #
-# When VERSION == "latest" we use the /releases/latest/download/ alias path
-# so we always pull the most recent published release without needing to
-# resolve the tag first.
+# When VERSION == "latest" we use the explicit t3code-server-latest release
+# alias. Do not use GitHub's /releases/latest path: this repo also publishes
+# devcontainer feature releases, and those may become the repository's latest
+# release even though they do not contain server tarballs.
 #
 # IMPORTANT: The asset filename below must exactly match what
 # build-t3code-artifacts.yaml attaches to the release.  That workflow is
@@ -95,9 +103,13 @@ REPO_NAME="t3code-devcontainer-relay"
 ASSET_NAME="t3code-server-linux-${ARCH}.tar.gz"
 
 if [ "${VERSION}" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${ASSET_NAME}"
+    DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/t3code-server-latest/${ASSET_NAME}"
 else
-    DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${VERSION}/${ASSET_NAME}"
+    case "${VERSION}" in
+        t3code-server-*) RELEASE_TAG="${VERSION}" ;;
+        *)              RELEASE_TAG="t3code-server-${VERSION}" ;;
+    esac
+    DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
 fi
 
 info "Download URL: ${DOWNLOAD_URL}"
@@ -115,7 +127,7 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 
 info "Downloading artifact..."
 if ! curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${ASSET_NAME}"; then
-    err "Failed to download artifact from ${DOWNLOAD_URL}. Ensure the release '${VERSION}' exists and the asset '${ASSET_NAME}' is attached to it. The build-t3code-artifacts.yaml workflow in this repo produces these assets."
+    err "Failed to download artifact from ${DOWNLOAD_URL}. Ensure the server artifact release exists and the asset '${ASSET_NAME}' is attached to it. The build-t3code-artifacts.yaml workflow in this repo produces these assets."
 fi
 
 info "Extracting to ${INSTALL_DIR} ..."

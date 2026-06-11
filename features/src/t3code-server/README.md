@@ -138,11 +138,14 @@ URL patterns used by `install.sh`:
 
 ```
 # latest (floating alias):
-https://github.com/boblangley/t3code-devcontainer-relay/releases/latest/download/t3code-server-linux-<arch>.tar.gz
+https://github.com/boblangley/t3code-devcontainer-relay/releases/download/t3code-server-latest/t3code-server-linux-<arch>.tar.gz
 
 # pinned version:
-https://github.com/boblangley/t3code-devcontainer-relay/releases/download/<VERSION>/t3code-server-linux-<arch>.tar.gz
+https://github.com/boblangley/t3code-devcontainer-relay/releases/download/t3code-server-<VERSION>/t3code-server-linux-<arch>.tar.gz
 ```
+
+Pinned installs may use either the full release tag, such as
+`t3code-server-v1.2.3`, or just the suffix, such as `v1.2.3`.
 
 **Coordination point:** the asset filename in `install.sh` must exactly match
 what `build-t3code-artifacts.yaml` attaches to the release.  If that workflow's

@@ -11,8 +11,9 @@
 #            https://github.com/boblangley/t3code-devcontainer-relay/releases/download/
 #              t3code-server-<tag>/t3code-server-linux-<arch>.tar.gz
 #
-#          A `latest` release alias is also updated so install.sh can resolve
-#          version=latest without knowing the exact tag.
+#          A `t3code-server-latest` release alias is also updated so install.sh
+#          can resolve version=latest without being confused by other releases
+#          in this repo, such as devcontainer feature releases.
 #
 # Triggers:
 #   - workflow_dispatch with a `tag` input (default: derived from submodule SHA)
@@ -80,6 +81,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.tag.outputs.release_tag }}
       artifact_tag: ${{ steps.tag.outputs.artifact_tag }}
+      latest_tag: ${{ steps.tag.outputs.latest_tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -100,8 +102,10 @@ jobs:
             ARTIFACT_TAG="$(git -C vendor-t3code rev-parse --short HEAD)"
           fi
           RELEASE_TAG="t3code-server-${ARTIFACT_TAG}"
+          LATEST_TAG="t3code-server-latest"
           echo "artifact_tag=${ARTIFACT_TAG}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}"   >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${LATEST_TAG}"     >> "$GITHUB_OUTPUT"
           echo "Resolved release tag: ${RELEASE_TAG}"
 
   # --------------------------------------------------------------------------
@@ -196,7 +200,9 @@ jobs:
   # --------------------------------------------------------------------------
   # Create (or update) the GitHub Release and attach both arch tarballs.
   # The release tag is `t3code-server-<tag>`.
-  # A `latest` release is also kept updated via the `make_latest` flag.
+  # A `t3code-server-latest` release alias is also kept updated. Do not rely on
+  # GitHub's global "latest release" pointer because this repo also publishes
+  # devcontainer feature releases such as v0.1.x.
   #
   # install.sh download URL pattern (must stay in sync):
   #   https://github.com/boblangley/t3code-devcontainer-relay/releases/download/
@@ -217,7 +223,7 @@ jobs:
         with:
           name: t3code-server-linux-arm64.tar.gz
 
-      - name: Create/update GitHub Release and upload assets
+      - name: Create/update versioned GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
@@ -233,9 +239,29 @@ jobs:
 
             These artifacts are consumed by the `t3code-server` devcontainer feature
             (`features/src/t3code-server/install.sh`).
-          # make_latest: true ensures `latest` release resolves to this one,
-          # which allows install.sh to use version=latest without knowing the tag.
-          make_latest: true
+          make_latest: false
+          overwrite_files: true
+          files: |
+            t3code-server-linux-amd64.tar.gz
+            t3code-server-linux-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create/update latest server alias and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-tag.outputs.latest_tag }}
+          name: "T3Code Server latest"
+          body: |
+            Floating alias for the latest forked T3Code server build.
+
+            Current versioned release: `${{ needs.resolve-tag.outputs.release_tag }}`
+            Built from submodule pin: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+
+            These artifacts are consumed when the `t3code-server` devcontainer feature
+            is configured with `version=latest`.
+          make_latest: false
+          overwrite_files: true
           files: |
             t3code-server-linux-amd64.tar.gz
             t3code-server-linux-arm64.tar.gz
