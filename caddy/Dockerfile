@@ -5,7 +5,8 @@
 # Produces a custom Caddy binary with three plugins:
 #   1. caddy-docker-proxy  — label-based dynamic reverse proxy (non-devcontainer services)
 #   2. caddy-dns/cloudflare — DNS-01 ACME provider for wildcard cert (*.t3.<domain>)
-#   3. t3code-relay module  — Docker discovery, SQLite, relay API, dynamic route emission
+#   3. t3code-relay module  — Docker discovery, SQLite, relay API + request-time
+#                              wildcard proxy (no route emission; see decision 0003)
 #
 # The final image runs `caddy docker-proxy` so caddy-docker-proxy drives label discovery,
 # and merges our base Caddyfile (CADDY_DOCKER_CADDYFILE_PATH) at startup for the relay app
@@ -24,6 +25,11 @@ FROM caddy:${CADDY_VERSION}-builder AS builder
 # Copy the local Go module source into the build context.
 # The Docker build context is the repo root, so module/ maps to ./module here.
 COPY module/ /build/module/
+
+# The module's go.mod requires a newer Go than the caddy:2.8.4-builder ships.
+# GOTOOLCHAIN=auto (Go's default) makes the build fetch the required toolchain
+# automatically during `xcaddy build`. Set explicitly for clarity/robustness.
+ENV GOTOOLCHAIN=auto
 
 # Build Caddy with all required plugins.
 #   --with github.com/lucaslorentz/caddy-docker-proxy/v2
@@ -49,8 +55,8 @@ COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
 # Install the base Caddyfile.
 # caddy-docker-proxy merges this at startup when CADDY_DOCKER_CADDYFILE_PATH is set.
-# It carries the global options block (ACME DNS-01, t3code_relay app config) and a
-# comment describing the per-devcontainer routes emitted dynamically by the module.
+# It carries the global options (ACME DNS-01, t3code_relay app config) and the
+# relay.t3.* / *.t3.* site blocks that bind the module's request-time handlers.
 COPY caddy/Caddyfile /etc/caddy/Caddyfile
 
 # Standard HTTP / HTTPS ports.
