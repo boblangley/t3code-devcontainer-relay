@@ -12,7 +12,7 @@
 # and merges our base Caddyfile (CADDY_DOCKER_CADDYFILE_PATH) at startup for the relay app
 # and global ACME configuration.
 
-ARG CADDY_VERSION=2.8.4
+ARG CADDY_VERSION=2.11.4
 
 # ---------------------------------------------------------------------------
 # Stage 1 — builder
@@ -26,9 +26,9 @@ FROM caddy:${CADDY_VERSION}-builder AS builder
 # The Docker build context is the repo root, so module/ maps to ./module here.
 COPY module/ /build/module/
 
-# The module's go.mod requires a newer Go than the caddy:2.8.4-builder ships.
-# GOTOOLCHAIN=auto (Go's default) makes the build fetch the required toolchain
-# automatically during `xcaddy build`. Set explicitly for clarity/robustness.
+# The module's go.mod may require a newer Go than the caddy builder image
+# ships. GOTOOLCHAIN=auto (Go's default) makes the build fetch the required
+# toolchain automatically during `xcaddy build`. Set explicitly for clarity.
 ENV GOTOOLCHAIN=auto
 
 # Build Caddy with all required plugins.
