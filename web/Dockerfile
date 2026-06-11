@@ -22,10 +22,19 @@ RUN corepack enable
 # workspace packages, so the full monorepo must be present to install + build).
 COPY vendor-t3code/ ./
 
-# Install with the committed lockfile, then build only the web app.
+# Install with the committed lockfile, scoped to the web app and its workspace
+# dependency closure (the trailing "..." selects @t3tools/web + its deps).
+# Why scoped instead of a full `pnpm install`: the monorepo's server/desktop
+# apps depend on native modules listed in pnpm-workspace.yaml's
+# onlyBuiltDependencies (e.g. node-pty, electron). A full install runs their
+# build scripts, and node-pty's `node-gyp rebuild` fails on node:24-*-slim
+# (no Python/compiler). The web app is a Vite SPA whose closure (web →
+# client-runtime, contracts, shared) contains NO native-built deps, so scoping
+# the install skips those builds entirely — and avoids compiling them under
+# arm64 emulation in the multi-arch build.
 # COORDINATION: the web package name is "@t3tools/web" (apps/web/package.json),
 # built via `vp build` → apps/web/dist. Confirmed against bearer-auth.
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --filter "@t3tools/web..."
 RUN pnpm --filter "@t3tools/web" build
 
 # ---- Stage 2: serve ---------------------------------------------------------
