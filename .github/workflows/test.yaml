@@ -44,8 +44,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # Matches the module's go.mod toolchain (Caddy v2.8.4 builds clean on 1.24).
-          go-version: "1.24"
+          # Must satisfy the module's go.mod `go 1.25.0` directive.
+          go-version: "1.25"
           # Cache go module downloads and build cache keyed on go.sum
           cache: true
           cache-dependency-path: module/go.sum
