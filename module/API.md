@@ -29,7 +29,7 @@ The module exposes two surfaces on one Caddy instance (one listener, :443):
 | Method | Path | Auth | Behaviour |
 |---|---|---|---|
 | GET | `/health` | none | `{ "ok": true, "service": "relay" }` |
-| GET | `/v1/environments` | Bearer | List environments from SQLite. Each: `{ environmentId, label, status, endpoint: { httpBaseUrl, wsBaseUrl, providerKind: "t3_relay" }, platform, serverVersion, lastSeen }`. `httpBaseUrl`/`wsBaseUrl` point at `https://<name>.t3.<domain>` (surface B). |
+| GET | `/v1/environments` | Bearer | List environments from SQLite. Each record matches contracts `RelayClientEnvironmentRecord` exactly: `{ environmentId, label, endpoint: { httpBaseUrl, wsBaseUrl, providerKind: "t3_relay" }, linkedAt }` — `label` and `linkedAt` are non-empty (the client decodes with Effect Schema). `httpBaseUrl`/`wsBaseUrl` point at `https://<name>.t3.<domain>` (surface B). Per-environment status/platform are read from `/status`, not this record. |
 | POST | `/v1/environments/:id/status` | Bearer | Probe the container (`GET /.well-known/t3/environment` with `X-Relay-Secret`); return `{ environmentId, endpoint, status: online\|offline, checkedAt, descriptor }`. |
 | POST | `/v1/environments/:id/connect` | Bearer | Return `{ environmentId, endpoint, credential, expiresAt }`. Since surface B already injects `X-Relay-Secret`, `credential` is a non-secret marker (the server trusts the relay-injected header); the client uses `endpoint` to open its session over surface B. |
 | OPTIONS | `*` | none | CORS preflight (headers per the CORS section below). |
