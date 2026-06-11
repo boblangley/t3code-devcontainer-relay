@@ -29,9 +29,8 @@
 #   - NODE_VERSION should match the `engines.node` field in the fork's root
 #     package.json. Node 22 is a safe LTS default but pin to the fork's
 #     minimum major if it differs.
-#   - SERVER_BUILD_OUTPUT is the directory inside apps/server/ that pnpm build
-#     produces (commonly `dist/` or `out/`). Verify against the fork before
-#     the first release.
+#   - SERVER_BUILD_OUTPUT is the directory inside apps/server/ that
+#     `pnpm --filter t3 build:bundle` produces.
 
 name: Build – T3Code Server Artifacts
 
@@ -157,16 +156,16 @@ jobs:
         working-directory: vendor-t3code
         run: pnpm install --frozen-lockfile
 
-      - name: Build server app
+      - name: Bundle server app
         # COORDINATION: The --filter value must match the pnpm workspace package
         # name for apps/server in the fork. Adjust PACKAGE_FILTER env var above.
         # Common alternatives: --filter=server  --filter=t3  --filter="./apps/server"
         working-directory: vendor-t3code
-        run: pnpm --filter "${{ env.PACKAGE_FILTER }}" build
+        run: pnpm --filter "${{ env.PACKAGE_FILTER }}" build:bundle
 
       - name: Package build output into tarball
         # COORDINATION: SERVER_BUILD_OUTPUT must match the directory that
-        # `pnpm build` writes to inside vendor-t3code/apps/server/.
+        # the server bundle script writes to inside vendor-t3code/apps/server/.
         # The tarball is laid out so that extracting it yields:
         #   t3code-server/dist/...   (or whatever SERVER_BUILD_OUTPUT is)
         #   t3code-server/package.json
