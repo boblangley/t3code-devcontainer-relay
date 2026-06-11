@@ -43,7 +43,7 @@ COPY vendor-t3code/ ./
 # COORDINATION: the web package name is "@t3tools/web" (apps/web/package.json),
 # built via `vp build` → apps/web/dist. Confirmed against bearer-auth.
 RUN pnpm install --frozen-lockfile --filter "@t3tools/web..."
-RUN pnpm --filter "@t3tools/web" build
+RUN VITE_HOSTED_APP_CHANNEL=latest pnpm --filter "@t3tools/web" build
 
 # ---- Stage 2: serve ---------------------------------------------------------
 FROM nginx:alpine AS serve
