@@ -114,8 +114,9 @@ jobs:
   #
   # Using native runners avoids the complexity of cross-compiling a Node app
   # (which involves native addons and architecture-specific node_modules). Each
-  # runner produces a self-contained tarball of the build output plus a small
-  # launcher shim that invokes the system Node runtime installed by the feature.
+  # runner produces a self-contained tarball of the bundled server plus its
+  # production dependencies. The devcontainer feature invokes the system Node
+  # runtime installed by its node feature dependency.
   # --------------------------------------------------------------------------
   build:
     needs: resolve-tag
@@ -169,10 +170,10 @@ jobs:
         # The tarball is laid out so that extracting it yields:
         #   t3code-server/dist/...   (or whatever SERVER_BUILD_OUTPUT is)
         #   t3code-server/package.json
+        #   t3code-server/node_modules/...
         # install.sh expects to find the entry point at a known relative path.
         run: |
           BUILD_DIR="vendor-t3code/apps/server/${{ env.SERVER_BUILD_OUTPUT }}"
-          PKG_JSON="vendor-t3code/apps/server/package.json"
 
           if [[ ! -d "$BUILD_DIR" ]]; then
             echo "ERROR: Expected build output directory not found: $BUILD_DIR"
@@ -180,12 +181,37 @@ jobs:
             exit 1
           fi
 
-          STAGING="staging/t3code-server"
-          mkdir -p "$STAGING"
-          cp -r "$BUILD_DIR" "$STAGING/${{ env.SERVER_BUILD_OUTPUT }}"
-          cp "$PKG_JSON" "$STAGING/package.json"
+          STAGING_ROOT="staging"
+          STAGING="$STAGING_ROOT/t3code-server"
+          rm -rf "$STAGING_ROOT"
+          mkdir -p "$STAGING_ROOT"
 
-          tar -czf "${{ env.TARBALL_NAME }}" -C staging t3code-server
+          # The Vite bundle intentionally leaves most third-party runtime
+          # dependencies external. pnpm deploy materializes a standalone
+          # package with production node_modules, including native modules for
+          # the current runner architecture.
+          WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$PWD}"
+          (
+            cd vendor-t3code
+            pnpm --filter "${{ env.PACKAGE_FILTER }}" deploy --legacy --prod "${WORKSPACE_ROOT}/${STAGING}"
+          )
+
+          ENTRYPOINT="$STAGING/${{ env.SERVER_BUILD_OUTPUT }}/bin.mjs"
+          if [[ ! -f "$ENTRYPOINT" ]]; then
+            echo "ERROR: Expected server entrypoint not found: $ENTRYPOINT"
+            echo "Check SERVER_BUILD_OUTPUT and apps/server/package.json bin."
+            exit 1
+          fi
+
+          if [[ ! -d "$STAGING/node_modules" ]]; then
+            echo "ERROR: Expected production dependencies not found: $STAGING/node_modules"
+            exit 1
+          fi
+
+          node -e "require.resolve('effect', { paths: [process.argv[1]] })" "$STAGING"
+          node -e "require.resolve('@effect/platform-node', { paths: [process.argv[1]] })" "$STAGING"
+
+          tar -czf "${{ env.TARBALL_NAME }}" -C "$STAGING_ROOT" t3code-server
           echo "Tarball contents:"
           tar -tzf "${{ env.TARBALL_NAME }}" | head -30
 

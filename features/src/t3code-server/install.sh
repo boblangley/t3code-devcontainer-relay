@@ -134,12 +134,19 @@ info "Extracting to ${INSTALL_DIR} ..."
 mkdir -p "${INSTALL_DIR}"
 tar -xzf "${TMP_DIR}/${ASSET_NAME}" -C "${INSTALL_DIR}" --strip-components=1
 
-# Verify extraction produced some content.
-# The tar archive is expected to contain an index.js or similar Node entrypoint.
-# Adjust this check if the build output layout changes.
 if [ -z "$(ls -A "${INSTALL_DIR}" 2>/dev/null)" ]; then
     err "Install directory ${INSTALL_DIR} is empty after extraction. The artifact may be malformed."
 fi
+
+if [ ! -f "${INSTALL_DIR}/dist/bin.mjs" ]; then
+    err "Server entrypoint not found at ${INSTALL_DIR}/dist/bin.mjs. The artifact may be malformed or built with an unexpected output layout."
+fi
+
+for package_name in "effect" "@effect/platform-node"; do
+    if ! node -e "require.resolve(process.argv[2], { paths: [process.argv[1]] })" "${INSTALL_DIR}" "${package_name}" >/dev/null 2>&1; then
+        err "Server artifact is missing production dependencies; could not resolve '${package_name}' from ${INSTALL_DIR}. Rebuild the server artifact with node_modules included."
+    fi
+done
 
 info "Server installed to ${INSTALL_DIR}"
 
