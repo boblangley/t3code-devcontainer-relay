@@ -1,0 +1,237 @@
+# build-t3code-artifacts.yaml
+#
+# Purpose: Build the forked T3Code server (from the vendor-t3code submodule,
+#          branch bearer-auth) for linux/amd64 and linux/arm64 (glibc), then
+#          attach the tarballs as assets to a GitHub Release on this repo.
+#
+#          The release tag format is `t3code-server-<tag>` (e.g.
+#          `t3code-server-v1.2.3`), matching the URL convention that
+#          features/src/t3code-server/install.sh uses when downloading:
+#
+#            https://github.com/boblangley/t3code-devcontainer-relay/releases/download/
+#              t3code-server-<tag>/t3code-server-linux-<arch>.tar.gz
+#
+#          A `latest` release alias is also updated so install.sh can resolve
+#          version=latest without knowing the exact tag.
+#
+# Triggers:
+#   - workflow_dispatch with a `tag` input (default: derived from submodule SHA)
+#   - schedule: weekly on Mondays at 02:00 UTC to pick up submodule pin bumps
+#     automatically (optional; disable by removing the schedule block if you
+#     prefer fully manual releases).
+#
+# Coordination points:
+#   - PACKAGE_FILTER below must match the pnpm workspace package name/filter
+#     for the server app in the t3code fork. Check vendor-t3code/apps/server/
+#     package.json for the "name" field. Likely candidates: `@t3tools/server`,
+#     `server`, or `t3`. Update the variable if it differs.
+#   - NODE_VERSION should match the `engines.node` field in the fork's root
+#     package.json. Node 22 is a safe LTS default but pin to the fork's
+#     minimum major if it differs.
+#   - SERVER_BUILD_OUTPUT is the directory inside apps/server/ that pnpm build
+#     produces (commonly `dist/` or `out/`). Verify against the fork before
+#     the first release.
+
+name: Build – T3Code Server Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >
+          Release tag suffix (e.g. "v1.2.3"). The GitHub Release will be tagged
+          "t3code-server-<tag>". Leave blank to auto-derive from the submodule
+          SHA (short, e.g. t3code-server-abc1234).
+        required: false
+        default: ""
+  schedule:
+    # Weekly build on Mondays at 02:00 UTC to catch submodule pin updates.
+    # Remove this block if you prefer fully explicit manual releases.
+    - cron: "0 2 * * 1"
+
+permissions:
+  contents: write
+
+env:
+  # -------------------------------------------------------------------------
+  # Confirmed against vendor-t3code @ bearer-auth: apps/server/package.json
+  # "name" = "t3" (its bin is dist/bin.mjs; `start` = `node dist/bin.mjs`).
+  # -------------------------------------------------------------------------
+  PACKAGE_FILTER: "t3"
+
+  # -------------------------------------------------------------------------
+  # Confirmed against vendor-t3code @ bearer-auth: root engines.node = "^24.13.1"
+  # (server engines also accept ^22.16 || ^23.11 || >=24.10; build with 24).
+  # -------------------------------------------------------------------------
+  NODE_VERSION: "24"
+
+  # -------------------------------------------------------------------------
+  # COORDINATION: The subdirectory within apps/server/ that `pnpm build` emits.
+  # Commonly "dist" or "out". Verify against the fork's tsconfig / build script.
+  # -------------------------------------------------------------------------
+  SERVER_BUILD_OUTPUT: "dist"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Resolve the release tag once, shared across both arch jobs.
+  # --------------------------------------------------------------------------
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      artifact_tag: ${{ steps.tag.outputs.artifact_tag }}
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          INPUT_TAG="${{ github.event.inputs.tag }}"
+          if [[ -n "$INPUT_TAG" ]]; then
+            ARTIFACT_TAG="$INPUT_TAG"
+          else
+            # Derive a short tag from the submodule HEAD SHA
+            ARTIFACT_TAG="$(git -C vendor-t3code rev-parse --short HEAD)"
+          fi
+          RELEASE_TAG="t3code-server-${ARTIFACT_TAG}"
+          echo "artifact_tag=${ARTIFACT_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}"   >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: ${RELEASE_TAG}"
+
+  # --------------------------------------------------------------------------
+  # Build the server for each architecture on a native runner.
+  # linux/amd64 → ubuntu-24.04
+  # linux/arm64 → ubuntu-24.04-arm (GitHub-hosted ARM runner)
+  #
+  # Using native runners avoids the complexity of cross-compiling a Node app
+  # (which involves native addons and architecture-specific node_modules). Each
+  # runner produces a self-contained tarball of the build output plus a small
+  # launcher shim that invokes the system Node runtime installed by the feature.
+  # --------------------------------------------------------------------------
+  build:
+    needs: resolve-tag
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runs_on: ubuntu-24.04
+          - arch: arm64
+            # GitHub-hosted ARM runner (ubuntu-24.04-arm).
+            # If this runner type is not enabled on your account, replace with
+            # a self-hosted ARM runner or use cross-compilation via QEMU.
+            runs_on: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runs_on }}
+
+    env:
+      TARBALL_NAME: t3code-server-linux-${{ matrix.arch }}.tar.gz
+
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable corepack (activates pnpm from packageManager field)
+        run: corepack enable
+
+      - name: Install pnpm dependencies (frozen lockfile)
+        working-directory: vendor-t3code
+        run: pnpm install --frozen-lockfile
+
+      - name: Build server app
+        # COORDINATION: The --filter value must match the pnpm workspace package
+        # name for apps/server in the fork. Adjust PACKAGE_FILTER env var above.
+        # Common alternatives: --filter=server  --filter=t3  --filter="./apps/server"
+        working-directory: vendor-t3code
+        run: pnpm --filter "${{ env.PACKAGE_FILTER }}" build
+
+      - name: Package build output into tarball
+        # COORDINATION: SERVER_BUILD_OUTPUT must match the directory that
+        # `pnpm build` writes to inside vendor-t3code/apps/server/.
+        # The tarball is laid out so that extracting it yields:
+        #   t3code-server/dist/...   (or whatever SERVER_BUILD_OUTPUT is)
+        #   t3code-server/package.json
+        # install.sh expects to find the entry point at a known relative path.
+        run: |
+          BUILD_DIR="vendor-t3code/apps/server/${{ env.SERVER_BUILD_OUTPUT }}"
+          PKG_JSON="vendor-t3code/apps/server/package.json"
+
+          if [[ ! -d "$BUILD_DIR" ]]; then
+            echo "ERROR: Expected build output directory not found: $BUILD_DIR"
+            echo "Check SERVER_BUILD_OUTPUT env var and the fork's build script."
+            exit 1
+          fi
+
+          STAGING="staging/t3code-server"
+          mkdir -p "$STAGING"
+          cp -r "$BUILD_DIR" "$STAGING/${{ env.SERVER_BUILD_OUTPUT }}"
+          cp "$PKG_JSON" "$STAGING/package.json"
+
+          tar -czf "${{ env.TARBALL_NAME }}" -C staging t3code-server
+          echo "Tarball contents:"
+          tar -tzf "${{ env.TARBALL_NAME }}" | head -30
+
+      - name: Upload tarball as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TARBALL_NAME }}
+          path: ${{ env.TARBALL_NAME }}
+          retention-days: 1
+
+  # --------------------------------------------------------------------------
+  # Create (or update) the GitHub Release and attach both arch tarballs.
+  # The release tag is `t3code-server-<tag>`.
+  # A `latest` release is also kept updated via the `make_latest` flag.
+  #
+  # install.sh download URL pattern (must stay in sync):
+  #   https://github.com/boblangley/t3code-devcontainer-relay/releases/download/
+  #     t3code-server-<tag>/t3code-server-linux-<arch>.tar.gz
+  # --------------------------------------------------------------------------
+  release:
+    needs: [resolve-tag, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download amd64 tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: t3code-server-linux-amd64.tar.gz
+
+      - name: Download arm64 tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: t3code-server-linux-arm64.tar.gz
+
+      - name: Create/update GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
+          name: "T3Code Server ${{ needs.resolve-tag.outputs.artifact_tag }}"
+          body: |
+            Forked T3Code server build (bearer-auth branch) for linux/amd64 and linux/arm64.
+
+            Built from submodule pin: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+
+            **Assets:**
+            - `t3code-server-linux-amd64.tar.gz` — for amd64 (x86_64) hosts
+            - `t3code-server-linux-arm64.tar.gz` — for arm64 (aarch64) hosts
+
+            These artifacts are consumed by the `t3code-server` devcontainer feature
+            (`features/src/t3code-server/install.sh`).
+          # make_latest: true ensures `latest` release resolves to this one,
+          # which allows install.sh to use version=latest without knowing the tag.
+          make_latest: true
+          files: |
+            t3code-server-linux-amd64.tar.gz
+            t3code-server-linux-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

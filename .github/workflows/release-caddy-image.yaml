@@ -1,0 +1,76 @@
+# release-caddy-image.yaml
+#
+# Purpose: Build and push the custom Caddy image (xcaddy + caddy-docker-proxy +
+#          cloudflare DNS + t3code-relay module) to GHCR as a multi-arch image.
+#
+# Triggers:
+#   - push of version tags matching v* (e.g. v0.1.0)
+#   - workflow_dispatch (manual run)
+#
+# Pushes to: ghcr.io/boblangley/t3code-relay-caddy
+#
+# Build context is the repo root because caddy/Dockerfile COPYs the module/ directory
+# (the local Go module that is baked into the xcaddy build).
+
+name: Release – Caddy Image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for cross-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags and labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/boblangley/t3code-relay-caddy
+          tags: |
+            # Tag `latest` on every tag push.
+            # NOTE: enable={{is_default_branch}} is intentionally NOT used here
+            # because this workflow is tag-triggered; the runner HEAD is detached
+            # at the tag, so is_default_branch would always be false.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            # Semver tags from the git tag (e.g. v0.1.0 → 0.1.0, 0.1, 0)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            # Also tag the full git tag string as-is (e.g. v0.1.0)
+            type=ref,event=tag
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          # Context must be the repo root so caddy/Dockerfile can COPY ./module/
+          context: .
+          file: ./caddy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

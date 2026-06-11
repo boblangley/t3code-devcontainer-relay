@@ -1,0 +1,23 @@
+{
+  "scenarios": [
+    {
+      "id": "install_defaults",
+      "description": "Install t3code-server with default options on base:noble",
+      "image": "mcr.microsoft.com/devcontainers/base:noble",
+      "features": {
+        "t3code-server": {}
+      }
+    },
+    {
+      "id": "install_custom_port",
+      "description": "Install t3code-server with a non-default port",
+      "image": "mcr.microsoft.com/devcontainers/base:noble",
+      "features": {
+        "t3code-server": {
+          "port": "3774",
+          "secretPath": "/run/t3code/my-secret"
+        }
+      }
+    }
+  ]
+}

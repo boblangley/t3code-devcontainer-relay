@@ -1,0 +1,32 @@
+{
+  // Dogfooding devcontainer (§5.8): this repo is developed inside a container
+  // that follows the exact consumer convention from §5.3, so the stack is
+  // exercised by its own development.
+  "name": "t3code-devcontainer-relay",
+  "image": "mcr.microsoft.com/devcontainers/base:noble",
+  "features": {
+    // BOOTSTRAP CAVEAT: the published GHCR feature reference is circular before
+    // the first feature release. During initial development we point at the
+    // local feature source (the devcontainer CLI supports local paths). After
+    // v0.1.0 is published, switch this to:
+    //   "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {}
+    "./features/src/t3code-server": {},
+    // Go toolchain for the t3code-relay Caddy module.
+    "ghcr.io/devcontainers/features/go:1": {},
+    // Run the devcontainer CLI / compose / image builds against the host daemon
+    // from inside the container. (Node arrives transitively via the
+    // t3code-server feature's dependsOn.)
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "runArgs": [
+    "--network=dev-ingress",
+    "-l", "devcontainer.id=${devcontainerId}",
+    "-h", "${devcontainerId}",
+    "--name", "t3code-devcontainer-relay"
+  ],
+  "mounts": [
+    // Shared secret, read-only. The host file must exist before first open:
+    //   mkdir -p ~/.config/t3relay && openssl rand -hex 32 > ~/.config/t3relay/secret && chmod 600 ~/.config/t3relay/secret
+    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly"
+  ]
+}

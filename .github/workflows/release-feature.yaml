@@ -1,0 +1,44 @@
+# release-feature.yaml
+#
+# Purpose: Publish the `t3code-server` devcontainer feature as an OCI artifact to GHCR.
+# Adapted from devcontainers/feature-starter's publish workflow.
+#
+# Triggers:
+#   - push to main when any file under features/** changes
+#   - workflow_dispatch (manual run)
+#
+# Publishes to: ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server
+
+name: Release – Devcontainer Feature
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "features/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Publish devcontainer feature
+        uses: devcontainers/action@v1
+        with:
+          publish-features: "true"
+          base-path-to-features: "./features/src"
+          # OCI registry and namespace where the feature artifact is pushed.
+          # The feature will be available at:
+          #   ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:<version>
+          oci-registry: "ghcr.io"
+          namespace: "boblangley/t3code-devcontainer-relay"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
