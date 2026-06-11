@@ -1,0 +1,155 @@
+# t3code-server devcontainer feature
+
+Installs and supervises the forked T3Code server (bearer-auth branch) inside a
+devcontainer. The server listens on `0.0.0.0:<port>` and validates inbound relay
+requests via a shared-secret file that is bind-mounted from the host.
+
+## Supported base image
+
+**Ubuntu 24.04 "noble" ONLY** (`mcr.microsoft.com/devcontainers/base:noble`).
+
+`install.sh` assumes glibc, apt, and bash and will fail fast with a clear error
+on any other distribution.  No Alpine / musl / distro-detection code paths are
+provided — this is an intentional operator constraint, not an oversight.
+
+## Dependencies
+
+The forked T3Code server is a Node.js application.  This feature declares:
+
+```json
+"dependsOn": { "ghcr.io/devcontainers/features/node:1": {} }
+```
+
+Consumers do **not** need to add the Node feature explicitly — it arrives
+transitively.  `install.sh` will fail fast if `node` is not on `PATH` after the
+dependency has been resolved, which should never happen in normal usage.
+
+## Options
+
+| Option       | Type   | Default                      | Description |
+|---|---|---|---|
+| `version`    | string | `latest`                     | Artifact release tag to install. `latest` pulls the most recent published release. Pin to a specific tag (e.g. `t3code-server-v1.2.3`) for reproducibility. |
+| `port`       | string | `3773`                       | Port the server binds on (`0.0.0.0:<port>`). Caddy reaches the server on the `dev-ingress` network at this port. |
+| `secretPath` | string | `/run/t3code/relay-secret`   | Path **inside the container** where the shared relay-secret file is bind-mounted from the host. Must match the `target` of the `mounts` entry in your `devcontainer.json`. |
+
+## Usage
+
+Minimal `devcontainer.json` (no options overrides needed for standard use):
+
+```jsonc
+{
+  "features": {
+    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {}
+  },
+  "runArgs": [
+    "--network=dev-ingress",
+    "-l", "devcontainer.id=${devcontainerId}",
+    "-h", "${devcontainerId}",
+    "--name", "<myrepo>"
+  ],
+  "mounts": [
+    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly"
+  ]
+}
+```
+
+### Required `runArgs` explained
+
+| Flag | Purpose |
+|---|---|
+| `--network=dev-ingress` | Attach to the shared bridge network so Caddy can reach the server. The network must be created once on the host: `docker network create dev-ingress`. |
+| `-l devcontainer.id=...` | Label the container so the `t3code-relay` Caddy module can discover it via the Docker API. |
+| `-h ${devcontainerId}` | Set the hostname to the devcontainer ID so Caddy can derive a stable address. |
+| `--name <myrepo>` | Name the container; the relay uses this as the routing hostname prefix (`<myrepo>.t3.<domain>`). Names must be unique across running containers. |
+
+### Required secret bind mount
+
+The relay module and the in-container server share a secret to authenticate
+relay-initiated requests.  The secret lives in a file on the host — never in
+environment variables or committed config — and is bind-mounted read-only into
+each devcontainer.
+
+The `mounts` entry above mounts `~/.config/t3relay/secret` to the default
+`secretPath` of `/run/t3code/relay-secret`.  Create it on the host before
+opening the devcontainer:
+
+```bash
+mkdir -p ~/.config/t3relay
+openssl rand -hex 32 > ~/.config/t3relay/secret
+chmod 600 ~/.config/t3relay/secret
+```
+
+The same file must be bind-mounted into the `caddy` compose service (see the
+top-level `docker-compose.yml`).
+
+If you override `secretPath` in the feature options, update the mount `target`
+to match.
+
+## How it works
+
+`install.sh` runs during the container image build:
+
+1. Guards that the base image is Ubuntu noble and that `node` is on `PATH`.
+2. Downloads the forked server tarball from a GitHub Release on this repo
+   (`boblangley/t3code-devcontainer-relay`) for the detected arch
+   (`linux-amd64` or `linux-arm64`, glibc).
+3. Extracts it to `/usr/local/lib/t3code-server`.
+4. Installs `t3code-supervise.sh` to `/usr/local/share/t3code-supervise.sh`.
+5. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
+   entrypoint can source them without re-parsing `devcontainer.json`.
+
+`t3code-supervise.sh` runs as the devcontainer `entrypoint` on every container
+start:
+
+1. Sources `/usr/local/etc/t3code-server.env`.
+2. Checks a PID file at `/tmp/t3code-server.pid` — if the supervisor is already
+   running (e.g. after a `docker restart` without a rebuild) it skips re-launch.
+3. Starts a restart-loop supervisor in a background subshell: runs the Node
+   server, logs to `/tmp/t3code-server.log`, backs off exponentially (1 → 2 → 4
+   … → 30 s cap) on repeated crashes.
+4. `exec "$@"` to hand off to the container's own command (or `sleep infinity`
+   if none is provided), keeping the container alive.
+
+### Server environment variables
+
+The supervise script passes these env vars to the Node process.  Their names
+must match what the forked server reads (defined in `vendor-t3code`'s
+`bearer-auth` branch — update here if the server names change):
+
+| Variable | Purpose |
+|---|---|
+| `PORT` | TCP port (`0.0.0.0:PORT`) |
+| `T3CODE_RELAY_SECRET_FILE` | Filesystem path to the shared-secret file |
+
+Logs are appended to `/tmp/t3code-server.log` inside the container.
+
+## Artifact URL convention
+
+The feature downloads server binaries from GitHub Releases on this repo.
+Release tags produced by `build-t3code-artifacts.yaml` follow this convention:
+
+```
+Tag:   t3code-server-<semver>   (e.g.  t3code-server-v1.2.3)
+Asset: t3code-server-linux-amd64.tar.gz
+       t3code-server-linux-arm64.tar.gz
+```
+
+URL patterns used by `install.sh`:
+
+```
+# latest (floating alias):
+https://github.com/boblangley/t3code-devcontainer-relay/releases/latest/download/t3code-server-linux-<arch>.tar.gz
+
+# pinned version:
+https://github.com/boblangley/t3code-devcontainer-relay/releases/download/<VERSION>/t3code-server-linux-<arch>.tar.gz
+```
+
+**Coordination point:** the asset filename in `install.sh` must exactly match
+what `build-t3code-artifacts.yaml` attaches to the release.  If that workflow's
+naming changes, update the `ASSET_NAME` variable in `install.sh` to match.
+
+## Supervision notes
+
+s6-overlay was evaluated and rejected as overkill for a single supervised
+process.  The simple while-loop supervisor is intentional.  If a second
+supervised process is ever needed, reconsider s6-overlay at that point.

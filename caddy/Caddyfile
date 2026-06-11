@@ -1,0 +1,79 @@
+# caddy/Caddyfile — base configuration
+#
+# This file is the STATIC base config merged by caddy-docker-proxy at startup
+# (via CADDY_DOCKER_CADDYFILE_PATH).  It is NOT the complete routing config;
+# routes are assembled from two dynamic sources at runtime:
+#
+#   1. t3code_relay module (global app below):
+#      Watches the Docker API for containers with the `devcontainer.id` label,
+#      probes each on port 3773, and emits Caddy routes for:
+#        - https://<container-name>.t3.{$T3_DOMAIN}  → reverse_proxy to that container
+#        - https://relay.t3.{$T3_DOMAIN}             → relay API surface
+#
+#   2. caddy-docker-proxy (label discovery):
+#      Non-devcontainer services (e.g. the web app) continue to use
+#      `caddy=` / `caddy.reverse_proxy=` labels as normal; CDP merges those
+#      routes alongside the ones emitted by the relay module.
+#
+# Do not add per-devcontainer site blocks here — the module handles those.
+
+{
+    # ------------------------------------------------------------------
+    # ACME / TLS: DNS-01 challenge via Cloudflare for wildcard cert
+    #
+    # Issuing *.t3.{$T3_DOMAIN} requires a DNS-01 challenge because wildcard
+    # SANs cannot be validated by HTTP-01.  CF_API_TOKEN must have Zone.DNS
+    # Edit permission on the zone that owns T3_DOMAIN.
+    # ------------------------------------------------------------------
+    acme_dns cloudflare {$CF_API_TOKEN}
+
+    # ------------------------------------------------------------------
+    # t3code_relay — registers the relay Caddy app.
+    #
+    # Exactly matches the target shape from SPEC.md §5.2.
+    #
+    #   domain_suffix     Suffix appended to sanitized container names to form
+    #                     the per-devcontainer hostname (e.g. myrepo.t3.example.com).
+    #   relay_host        Hostname of the relay API surface (relay.t3.example.com).
+    #   db_path           SQLite database file (persisted via a named volume).
+    #   docker_host       Docker API socket.  Read-only access is sufficient
+    #                     (discovery + inspect only, no exec needed — see SPEC §D1).
+    #   probe_port        Port the t3code server listens on inside devcontainers.
+    #   tokens            Comma-separated bearer tokens accepted by the relay API
+    #                     (one per person/device; revoke individually by removing).
+    #   shared_secret_file  Path to the shared-secret file bind-mounted from the
+    #                     host.  The relay adds X-Relay-Secret on requests to
+    #                     devcontainers; servers verify it.  Never in env vars.
+    # ------------------------------------------------------------------
+    t3code_relay {
+        domain_suffix      t3.{$T3_DOMAIN}
+        relay_host         relay.t3.{$T3_DOMAIN}
+        db_path            /var/lib/t3code-relay/relay.db
+        docker_host        unix:///var/run/docker.sock
+        probe_port         3773
+        tokens             {$RELAY_TOKENS}
+        shared_secret_file /run/secrets/t3relay-secret
+    }
+}
+
+# ------------------------------------------------------------------
+# Wildcard TLS site block (optional — only here to anchor the cert)
+#
+# Caddy needs at least one site block referencing the wildcard name for
+# it to request and renew the *.t3.{$T3_DOMAIN} certificate.  The relay
+# module emits the real per-host routes; this block exists solely as a
+# cert anchor and responds 404 to any request that isn't matched by a
+# module- or label-generated route.
+#
+# If the t3code_relay module (or a future Caddy feature) provides its
+# own cert anchor, this block can be removed.
+# ------------------------------------------------------------------
+*.t3.{$T3_DOMAIN} {
+    tls {
+        dns cloudflare {$CF_API_TOKEN}
+    }
+
+    # Fallback: requests that reach here were not matched by a more
+    # specific route emitted by the relay module or caddy-docker-proxy.
+    respond "not found" 404
+}

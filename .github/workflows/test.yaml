@@ -1,0 +1,89 @@
+# test.yaml
+#
+# Purpose: Run automated tests on pull requests and pushes to main.
+#
+#   - module-test: runs `go test ./...` against the t3code-relay Caddy module
+#     in module/ (Go source for the relay).
+#
+#   - feature-test: runs `devcontainers features test` for the t3code-server
+#     feature via devcontainers/action@v1. Note: the feature test exercises
+#     install.sh, which downloads the server artifact from a GitHub Release. On
+#     PRs where no release artifact exists yet, the test will exercise the
+#     install path with whatever the `latest` release resolves to (or fail if
+#     no release has been published yet). Structure your test scenarios in
+#     test/t3code-server/ to skip artifact-dependent assertions gracefully when
+#     the artifact is not yet available — the devcontainer features test harness
+#     supports scenario-level skip logic in test.sh.
+#
+# Triggers:
+#   - pull_request (any branch)
+#   - push to main
+
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Go module tests for the t3code-relay Caddy module (module/).
+  # --------------------------------------------------------------------------
+  module-test:
+    name: Go module tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Matches the module's go.mod toolchain (Caddy v2.8.4 builds clean on 1.24).
+          go-version: "1.24"
+          # Cache go module downloads and build cache keyed on go.sum
+          cache: true
+          cache-dependency-path: module/go.sum
+
+      - name: Run Go tests
+        working-directory: module
+        run: go test ./...
+
+  # --------------------------------------------------------------------------
+  # Devcontainer feature tests for t3code-server.
+  #
+  # Uses devcontainers/action@v1 to invoke `devcontainers features test`.
+  # Test scenarios live in test/t3code-server/ (devcontainers/feature-starter
+  # convention: each subdirectory is a test scenario with a test.sh and an
+  # optional scenarios.json).
+  #
+  # Note: feature tests that exercise install.sh will attempt to download the
+  # server artifact from GitHub Releases. Ensure at least one release tagged
+  # `t3code-server-*` exists (or that the test scenario handles a missing
+  # artifact gracefully) before this job will fully pass.
+  # --------------------------------------------------------------------------
+  feature-test:
+    name: Devcontainer feature tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run devcontainer feature tests
+        uses: devcontainers/action@v1
+        with:
+          # Run tests, not just schema validation.
+          validate-only: "false"
+          # Path to the features source (devcontainers/feature-starter convention).
+          base-path-to-features: "./features/src"
+          # Run tests for this specific feature only.
+          # COORDINATION: this must match the feature directory name under
+          # features/src/ — currently "t3code-server".
+          features: "t3code-server"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
