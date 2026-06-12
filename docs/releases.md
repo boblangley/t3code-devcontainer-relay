@@ -45,7 +45,7 @@ Legacy fork tags may exist, but new releases should use the intended convention.
 Fork-derived artifacts use the manifest `releaseVersion`:
 
 - `t3code-server-<releaseVersion>` GitHub Release containing server tarballs
-- `ghcr.io/boblangley/t3code-relay-web:<releaseVersion>`
+- `t3code-web-<releaseVersion>` tag publishing `ghcr.io/boblangley/t3code-relay-web:<releaseVersion>`
 - `t3code-desktop-<releaseVersion>` GitHub Release containing unsigned desktop installers
 
 Floating GitHub Release aliases are scoped by artifact type:

@@ -7,6 +7,7 @@
 #
 # Triggers:
 #   - push to main when vendor-t3code or vendor/t3code.yml changes
+#   - push of fork-derived web image tags matching t3code-web-*
 #   - workflow_dispatch (manual run)
 #
 # Pushes to: ghcr.io/boblangley/t3code-relay-web
@@ -22,6 +23,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "t3code-web-*"
     paths:
       - "vendor-t3code"
       - "vendor/t3code.yml"
@@ -29,6 +32,13 @@ on:
       - ".github/workflows/release-web-image.yaml"
       - "scripts/validate-vendor-t3code.sh"
   workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: >
+          Web image version to publish, without the t3code-web- prefix. Leave
+          blank to use vendor/t3code.yml releaseVersion.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -82,6 +92,35 @@ jobs:
           echo "fork_tag=$(manifest_value forkTag)" >> "$GITHUB_OUTPUT"
           echo "fork_commit=$(manifest_value forkCommit)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve image version
+        id: release
+        run: |
+          MANIFEST_VERSION="${{ steps.vendor.outputs.release_version }}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            case "$TAG" in
+              t3code-web-*) VERSION="${TAG#t3code-web-}" ;;
+              *) echo "Unexpected tag: $TAG" >&2; exit 1 ;;
+            esac
+          elif [[ -n "${{ github.event.inputs.releaseVersion }}" ]]; then
+            VERSION="${{ github.event.inputs.releaseVersion }}"
+          else
+            VERSION="$MANIFEST_VERSION"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid web image version: $VERSION" >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" != "$MANIFEST_VERSION" ]]; then
+            echo "Web image version $VERSION does not match vendor/t3code.yml releaseVersion $MANIFEST_VERSION." >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU (for cross-arch emulation)
         uses: docker/setup-qemu-action@v3
 
@@ -102,10 +141,10 @@ jobs:
           images: ghcr.io/boblangley/t3code-relay-web
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ steps.vendor.outputs.release_version }}
-            type=raw,value=t3code-web-${{ steps.vendor.outputs.release_version }}
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=t3code-web-${{ steps.release.outputs.version }}
           labels: |
-            org.opencontainers.image.version=${{ steps.vendor.outputs.release_version }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
             org.opencontainers.image.revision=${{ steps.vendor.outputs.fork_commit }}
             org.opencontainers.image.ref.name=${{ steps.vendor.outputs.fork_tag }}
 
