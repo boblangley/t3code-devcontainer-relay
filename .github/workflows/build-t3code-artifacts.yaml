@@ -155,7 +155,11 @@ jobs:
 
       - name: Install pnpm dependencies (frozen lockfile)
         working-directory: vendor-t3code
-        run: pnpm install --frozen-lockfile
+        # Install only the server package and its dependency closure. A full
+        # workspace install pulls in desktop-only Electron postinstalls, which
+        # are unnecessary for the server tarball and can fail on transient
+        # Electron download errors.
+        run: pnpm --filter "${{ env.PACKAGE_FILTER }}..." install --frozen-lockfile
 
       - name: Bundle server app
         # COORDINATION: The --filter value must match the pnpm workspace package
