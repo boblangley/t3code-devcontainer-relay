@@ -5,7 +5,8 @@
 #          repository.
 #
 #          The release tag format is `t3code-desktop-<releaseVersion>` (e.g.
-#          `t3code-desktop-0.0.28-wyrd.1`). A `t3code-desktop-latest` alias is
+#          `t3code-desktop-0.0.28-boblangley.1`). A `t3code-desktop-latest`
+#          alias is
 #          also updated for humans who want the newest relay-compatible desktop
 #          build without knowing the manifest release version.
 #
@@ -34,9 +35,9 @@ on:
     inputs:
       releaseVersion:
         description: >
-          Release version suffix (e.g. "0.0.28-wyrd.1"). The GitHub Release
-          will be tagged "t3code-desktop-<releaseVersion>". Leave blank to use
-          vendor/t3code.yml releaseVersion.
+          Release version suffix (e.g. "0.0.28-boblangley.1"). The GitHub
+          Release will be tagged "t3code-desktop-<releaseVersion>". Leave blank
+          to use vendor/t3code.yml releaseVersion.
         required: false
         default: ""
 

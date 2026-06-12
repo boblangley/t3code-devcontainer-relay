@@ -14,7 +14,7 @@ This repository is the release control plane for the self-hosted relay distribut
 The fork repository owns upstream synchronization work:
 
 - detect an upstream stable T3Code release
-- create a fork milestone named for the fork release, for example `t3code-0.0.28-wyrd.1`
+- create a fork milestone named for the fork release, for example `t3code-0.0.28-boblangley.1`
 - sync the fork default branch, currently `bearer-auth`, with upstream `main`
 - rebase the fork patch stack when needed
 - merge the fork PR into the default branch
@@ -33,9 +33,9 @@ After the fork release tag exists, the fork automation should open a PR here tha
 The intended convention is:
 
 ```text
-fork tag:       t3code-<upstreamVersion>-wyrd.<revision>
-releaseVersion: <upstreamVersion>-wyrd.<revision>
-milestone:      t3code-<upstreamVersion>-wyrd.<revision>
+fork tag:       t3code-<upstreamVersion>-boblangley.<revision>
+releaseVersion: <upstreamVersion>-boblangley.<revision>
+milestone:      t3code-<upstreamVersion>-boblangley.<revision>
 ```
 
 Legacy fork tags may exist, but new releases should use the intended convention.

@@ -5,8 +5,8 @@
 #          attach the tarballs as assets to a GitHub Release on this repo.
 #
 #          The release tag format is `t3code-server-<releaseVersion>` (e.g.
-#          `t3code-server-0.0.28-wyrd.1`), matching the URL convention that
-#          features/src/t3code-server/install.sh uses when downloading:
+#          `t3code-server-0.0.28-boblangley.1`), matching the URL convention
+#          that features/src/t3code-server/install.sh uses when downloading:
 #
 #            https://github.com/boblangley/t3code-devcontainer-relay/releases/download/
 #              t3code-server-<tag>/t3code-server-linux-<arch>.tar.gz
@@ -45,9 +45,9 @@ on:
     inputs:
       releaseVersion:
         description: >
-          Release version suffix (e.g. "0.0.28-wyrd.1"). The GitHub Release
-          will be tagged "t3code-server-<releaseVersion>". Leave blank to use
-          vendor/t3code.yml releaseVersion.
+          Release version suffix (e.g. "0.0.28-boblangley.1"). The GitHub
+          Release will be tagged "t3code-server-<releaseVersion>". Leave blank
+          to use vendor/t3code.yml releaseVersion.
         required: false
         default: ""
 
