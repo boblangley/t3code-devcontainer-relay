@@ -28,18 +28,18 @@ There are two ways to use the client:
 
 Go to the releases page:
 
-**[https://github.com/boblangley/t3code/releases](https://github.com/boblangley/t3code/releases)**
+**[https://github.com/boblangley/t3code-devcontainer-relay/releases](https://github.com/boblangley/t3code-devcontainer-relay/releases)**
 
-Under the latest release, find the **Assets** section. Download the file for your OS and
-processor:
+Open the latest `t3code-desktop-*` release, or the `t3code-desktop-latest` alias, then find the
+**Assets** section. Download the file for your OS and processor:
 
 | OS | Processor | File to download |
 |---|---|---|
-| macOS | Apple Silicon (M1/M2/M3/M4) | `T3Code-arm64.dmg` or `.zip` |
-| macOS | Intel | `T3Code-x64.dmg` or `.zip` |
-| Linux | 64-bit (most computers) | `T3Code-x86_64.AppImage` |
-| Linux | ARM 64-bit (e.g. Raspberry Pi 4+) | `T3Code-arm64.AppImage` |
-| Windows | 64-bit | `T3Code-Setup.exe` or `T3Code-portable.zip` |
+| macOS | Apple Silicon (M1/M2/M3/M4) | `T3-Code-<version>-arm64.dmg` or `.zip` |
+| macOS | Intel | `T3-Code-<version>-x64.dmg` or `.zip` |
+| Linux | 64-bit (most computers) | `T3-Code-<version>-x64.AppImage` or `T3-Code-<version>-x86_64.AppImage` |
+| Windows | 64-bit | `T3-Code-<version>-x64.exe` |
+| Windows | ARM 64-bit | `T3-Code-<version>-arm64.exe` |
 
 If you are unsure which macOS processor you have: click the Apple menu (top-left) → **About This
 Mac**. Under "Chip" or "Processor" you will see either "Apple M..." (Apple Silicon = arm64) or
@@ -86,8 +86,8 @@ The installer or app will open. You only need to do this once.
 Make the AppImage executable, then run it:
 
 ```bash
-chmod +x T3Code-x86_64.AppImage
-./T3Code-x86_64.AppImage
+chmod +x T3-Code-<version>-x64.AppImage
+./T3-Code-<version>-x64.AppImage
 ```
 
 Some file managers let you right-click → **Properties** → **Permissions** → tick "Allow

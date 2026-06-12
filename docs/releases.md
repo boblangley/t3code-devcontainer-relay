@@ -46,7 +46,12 @@ Fork-derived artifacts use the manifest `releaseVersion`:
 
 - `t3code-server-<releaseVersion>` GitHub Release containing server tarballs
 - `ghcr.io/boblangley/t3code-relay-web:<releaseVersion>`
-- future desktop artifacts should use the same release version
+- `t3code-desktop-<releaseVersion>` GitHub Release containing unsigned desktop installers
+
+Floating GitHub Release aliases are scoped by artifact type:
+
+- `t3code-server-latest`
+- `t3code-desktop-latest`
 
 Relay infrastructure artifacts keep their own component version clocks:
 

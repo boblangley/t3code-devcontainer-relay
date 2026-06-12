@@ -68,16 +68,20 @@ relay uses it for discovery/health. (Stock already exposes this.)
 `<endpoint.httpBaseUrl>` (which is `https://<name>.t3.<domain>`, proxied by the
 relay). No link-challenge / OAuth-metadata / mobile calls.
 
-## 3. Desktop distribution (CI in the fork, not here)
+## 3. Desktop distribution (CI in this repo)
 
-`release-desktop` workflow in the fork, tag-triggered, matrix:
+`.github/workflows/build-t3code-desktop.yaml` builds desktop artifacts from the
+`vendor-t3code` submodule pinned by this repo:
+
 - macOS `.dmg`/`.zip` arm64 + x64, **unsigned** (`CSC_IDENTITY_AUTO_DISCOVERY=false`,
-  no notarization).
-- Linux AppImage.
-- Windows NSIS + portable zip.
+  no notarization)
+- Linux AppImage x64
+- Windows NSIS arm64 + x64
 
-Attach to GitHub Releases on the fork. This repo's `docs/client-install.md`
-covers the unsigned first-run steps.
+Artifacts attach to GitHub Releases in this repo using
+`t3code-desktop-<releaseVersion>`, plus the floating alias
+`t3code-desktop-latest`. This repo's `docs/client-install.md` covers the
+unsigned first-run steps.
 
 ## 4. After patching
 

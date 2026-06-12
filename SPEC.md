@@ -195,14 +195,14 @@ Branch `bearer-auth`, patches limited to:
 - **desktop & web apps:** replace the Clerk flow with a settings field for relay URL + bearer token; auth strategy sends `Authorization: Bearer <token>` on relay calls.
 - **desktop:** disable/remove the auto-updater (it would otherwise pull stock upstream builds that expect Clerk).
 
-CI in the monorepo builds at minimum the server artifact (linux amd64+arm64) on submodule pin bumps.
+CI in the monorepo builds the server artifact (linux amd64+arm64), desktop artifacts, and web image on submodule pin bumps.
 
-**Desktop distribution (CI in the fork repo, not the monorepo):** a `release-desktop` workflow in `boblangley/t3code`, triggered by tag, with a matrix building:
-- macOS: `.dmg`/`.zip`, arm64 + x64 (or universal), unsigned — set `CSC_IDENTITY_AUTO_DISCOVERY=false` and disable notarization.
-- Linux: AppImage (a PKGBUILD for Arch/CachyOS is optional later if desktop integration is wanted).
-- Windows: NSIS installer + portable zip.
+**Desktop distribution (CI in this repo):** `build-t3code-desktop.yaml` builds from the pinned `vendor-t3code` submodule, with a matrix building:
+- macOS: `.dmg`/`.zip`, arm64 + x64, unsigned — set `CSC_IDENTITY_AUTO_DISCOVERY=false` and disable notarization.
+- Linux: AppImage x64 (a PKGBUILD for Arch/CachyOS is optional later if desktop integration is wanted).
+- Windows: NSIS installer arm64 + x64.
 
-Artifacts attach to GitHub Releases on the fork. The monorepo README links to that releases page and documents first-run steps for unsigned builds: macOS `xattr -dr com.apple.quarantine` (or right-click → Open); Windows SmartScreen "More info → Run anyway". Each user/device gets its own token from `RELAY_TOKENS` so tokens can be revoked independently.
+Artifacts attach to GitHub Releases on this repo using `t3code-desktop-<releaseVersion>`, plus the floating `t3code-desktop-latest` alias. The docs link to this repo's releases page and document first-run steps for unsigned builds: macOS `xattr -dr com.apple.quarantine` (or right-click → Open); Windows SmartScreen "More info → Run anyway". Each user/device gets its own token from `RELAY_TOKENS` so tokens can be revoked independently.
 
 **Web app image (`ghcr.io/boblangley/t3code-relay-web`):** built from the fork submodule by a monorepo workflow and run as a compose service (§5.5). Discovery sub-item of D2: determine whether the web build is a static SPA (serve via a minimal static-file image; relay URL entered in the client UI or provided as runtime config) or requires a Node server process — this determines the Dockerfile.
 
@@ -313,7 +313,7 @@ Page-by-page scope:
 - **`tailscale.md`** — what a tailnet is, creating an account, generating the auth key for the sidecar (and the reusable/ephemeral tradeoff), confirming the node appears in the admin console, configuring split DNS for `t3.<domain>` → the sidecar's tailnet IP, installing Tailscale on a phone/laptop and verifying reachability.
 - **`local-dns.md`** — why the local machine needs dnsmasq (wildcard `*.t3.<domain>` → localhost), install + config per OS (macOS via Homebrew with the resolver-file approach; Linux including systemd-resolved coexistence, which is the usual trap), verification with `dig`/`ping`.
 - **`secrets-and-tokens.md`** — the three credentials and their distinct jobs (CF token: lets Caddy prove domain ownership; relay bearer tokens: let a *client/person* in, one per person; shared secret file: lets the *relay* talk to servers). Generating strong values (`openssl rand -hex 32`), creating `~/.config/t3relay/secret` with `chmod 600`, filling `.env` from `.env.example`, how to revoke a person's token.
-- **`client-install.md`** — downloading the right desktop build per OS/arch from the fork's releases page, the unsigned-build first-run steps (Gatekeeper, SmartScreen), entering the relay URL and bearer token, plus the web app at `web.t3.<domain>` as the zero-install alternative.
+- **`client-install.md`** — downloading the right desktop build per OS/arch from this repo's `t3code-desktop-*` releases, the unsigned-build first-run steps (Gatekeeper, SmartScreen), entering the relay URL and bearer token, plus the web app at `web.t3.<domain>` as the zero-install alternative.
 - **`add-a-devcontainer.md`** — the per-repo recipe: the §5.3 devcontainer.json snippet annotated line-by-line (what each runArg does and why), creating `dev-ingress` once (`docker network create dev-ingress`), naming rules/collisions, and verifying the repo appears in the client.
 
 Acceptance test for this documentation: a newcomer can complete `setup-guide.md` start-to-finish on a fresh machine without asking for help or consulting external docs.

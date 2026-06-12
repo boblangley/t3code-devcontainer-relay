@@ -216,15 +216,15 @@ You should see `127.0.0.1` in the `ANSWER SECTION`. If not, see
 
 ## Stage 8 — Install the T3Code client
 
-Download the desktop app for your OS from the fork's GitHub Releases page and configure it to
+Download the desktop app for your OS from this repo's GitHub Releases page and configure it to
 point at your relay.
 
 Full details: [client-install.md](client-install.md)
 
 **Short version:**
 
-1. Go to [github.com/boblangley/t3code/releases](https://github.com/boblangley/t3code/releases).
-2. Download the build for your OS and architecture.
+1. Go to [github.com/boblangley/t3code-devcontainer-relay/releases](https://github.com/boblangley/t3code-devcontainer-relay/releases).
+2. Open the latest `t3code-desktop-*` release, or `t3code-desktop-latest`, and download the build for your OS and architecture.
 3. On macOS: if macOS blocks the app, run
    `xattr -dr com.apple.quarantine /Applications/T3Code.app`.
    On Windows: if SmartScreen appears, click **More info** → **Run anyway**.

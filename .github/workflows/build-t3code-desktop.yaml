@@ -1,0 +1,255 @@
+# build-t3code-desktop.yaml
+#
+# Purpose: Build the forked T3Code desktop app from the vendor-t3code submodule
+#          and attach unsigned desktop installers to GitHub Releases on this
+#          repository.
+#
+#          The release tag format is `t3code-desktop-<releaseVersion>` (e.g.
+#          `t3code-desktop-0.0.28-wyrd.1`). A `t3code-desktop-latest` alias is
+#          also updated for humans who want the newest relay-compatible desktop
+#          build without knowing the manifest release version.
+#
+# Triggers:
+#   - push to main when vendor-t3code or vendor/t3code.yml changes
+#   - workflow_dispatch with an optional releaseVersion input
+#
+# Notes:
+#   - Builds are unsigned. macOS users must allow the app through Gatekeeper;
+#     Windows users may see SmartScreen until signing/reputation exists.
+#   - Submodules are fetched non-recursively because the fork has an orphan
+#     nested gitlink under .repos/alchemy-effect/.vendor/alchemy.
+
+name: Build – T3Code Desktop Artifacts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "vendor-t3code"
+      - "vendor/t3code.yml"
+      - ".github/workflows/build-t3code-desktop.yaml"
+      - "scripts/validate-vendor-t3code.sh"
+  workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: >
+          Release version suffix (e.g. "0.0.28-wyrd.1"). The GitHub Release
+          will be tagged "t3code-desktop-<releaseVersion>". Leave blank to use
+          vendor/t3code.yml releaseVersion.
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      artifact_tag: ${{ steps.tag.outputs.artifact_tag }}
+      latest_tag: ${{ steps.tag.outputs.latest_tag }}
+      fork_tag: ${{ steps.vendor.outputs.fork_tag }}
+      fork_commit: ${{ steps.vendor.outputs.fork_commit }}
+      upstream_version: ${{ steps.vendor.outputs.upstream_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch vendor-t3code submodule (non-recursive)
+        run: git submodule update --init --depth=1 vendor-t3code
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate vendor manifest
+        run: bash scripts/validate-vendor-t3code.sh
+
+      - name: Read vendor manifest
+        id: vendor
+        run: |
+          manifest_value() {
+            awk -F':[[:space:]]*' -v key="$1" '
+              $1 ~ "^[[:space:]]*" key "$" {
+                value = $2
+                sub(/[[:space:]]+#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' vendor/t3code.yml
+          }
+          echo "release_version=$(manifest_value releaseVersion)" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$(manifest_value forkTag)" >> "$GITHUB_OUTPUT"
+          echo "fork_commit=$(manifest_value forkCommit)" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$(manifest_value upstreamVersion)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          INPUT_VERSION="${{ github.event.inputs.releaseVersion }}"
+          if [[ -n "$INPUT_VERSION" ]]; then
+            ARTIFACT_TAG="$INPUT_VERSION"
+          else
+            ARTIFACT_TAG="${{ steps.vendor.outputs.release_version }}"
+          fi
+          RELEASE_TAG="t3code-desktop-${ARTIFACT_TAG}"
+          LATEST_TAG="t3code-desktop-latest"
+          echo "artifact_tag=${ARTIFACT_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: ${RELEASE_TAG}"
+
+  build:
+    needs: resolve-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact_id: macos-arm64
+            runs_on: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+          - artifact_id: macos-x64
+            runs_on: macos-15-intel
+            platform: mac
+            target: dmg
+            arch: x64
+          - artifact_id: linux-x64
+            runs_on: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+          - artifact_id: windows-x64
+            runs_on: windows-2025
+            platform: win
+            target: nsis
+            arch: x64
+          - artifact_id: windows-arm64
+            runs_on: windows-11-arm
+            platform: win
+            target: nsis
+            arch: arm64
+
+    runs-on: ${{ matrix.runs_on }}
+
+    env:
+      DESKTOP_OUTPUT_DIR: release/${{ matrix.artifact_id }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      T3CODE_DESKTOP_SIGNED: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch vendor-t3code submodule (non-recursive)
+        run: git submodule update --init --depth=1 vendor-t3code
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: vendor-t3code/pnpm-lock.yaml
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick libarchive-tools
+
+      - name: Install pnpm dependencies
+        working-directory: vendor-t3code
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop artifact
+        working-directory: vendor-t3code
+        shell: bash
+        run: |
+          node scripts/build-desktop-artifact.ts \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.resolve-tag.outputs.artifact_tag }}" \
+            --output-dir "${DESKTOP_OUTPUT_DIR}"
+
+      - name: List desktop artifacts
+        working-directory: vendor-t3code
+        shell: bash
+        run: |
+          find "${DESKTOP_OUTPUT_DIR}" -maxdepth 1 -type f -print | sort
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: t3code-desktop-${{ matrix.artifact_id }}
+          path: vendor-t3code/${{ env.DESKTOP_OUTPUT_DIR }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: [resolve-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: t3code-desktop-*
+          path: desktop-release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: |
+          find desktop-release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Create/update versioned GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
+          name: "T3Code Desktop ${{ needs.resolve-tag.outputs.artifact_tag }}"
+          body: |
+            Forked T3Code desktop build for macOS, Linux, and Windows.
+
+            Release version: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+            Upstream version: `${{ needs.resolve-tag.outputs.upstream_version }}`
+            Fork tag: `${{ needs.resolve-tag.outputs.fork_tag }}`
+            Fork commit: `${{ needs.resolve-tag.outputs.fork_commit }}`
+
+            These desktop artifacts are unsigned. macOS Gatekeeper and Windows
+            SmartScreen first-run warnings are expected.
+          make_latest: false
+          overwrite_files: true
+          files: desktop-release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create/update latest desktop alias and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-tag.outputs.latest_tag }}
+          name: "T3Code Desktop latest"
+          body: |
+            Floating alias for the latest forked T3Code desktop build.
+
+            Current versioned release: `${{ needs.resolve-tag.outputs.release_tag }}`
+            Release version: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+            Fork tag: `${{ needs.resolve-tag.outputs.fork_tag }}`
+            Fork commit: `${{ needs.resolve-tag.outputs.fork_commit }}`
+
+            These desktop artifacts are unsigned. macOS Gatekeeper and Windows
+            SmartScreen first-run warnings are expected.
+          make_latest: false
+          overwrite_files: true
+          files: desktop-release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
