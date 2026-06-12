@@ -58,6 +58,38 @@ func TestProxyHandler_CORSHeadersOnUnknownHost(t *testing.T) {
 	}
 }
 
+func TestProxyHandler_StripsUpstreamCORSHeaders(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "authorization")
+		_, _ = w.Write([]byte(`{"environmentId":"env-1"}`))
+	}))
+	defer target.Close()
+
+	p, cleanup := testProxyHandlerForTarget(t, target)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "https://repo.t3.example.com/.well-known/t3/environment", nil)
+	req.Header.Set("Origin", "https://web.t3.example.com")
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTP(rec, req, nil); err != nil {
+		t.Fatalf("ServeHTTP: %v", err)
+	}
+
+	values := rec.Header().Values("Access-Control-Allow-Origin")
+	if len(values) != 1 || values[0] != "*" {
+		t.Fatalf("Access-Control-Allow-Origin values = %#v, want exactly [*]", values)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, DELETE, OPTIONS" {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want relay methods", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "authorization, b3, traceparent, content-type, dpop" {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want relay headers", got)
+	}
+}
+
 func TestProxyHandler_PublicDescriptorPassesThroughWithoutRelaySecret(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/t3/environment" {

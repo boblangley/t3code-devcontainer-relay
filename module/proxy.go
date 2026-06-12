@@ -113,10 +113,23 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 				writeJSONError(rw, http.StatusBadGateway, "bad_gateway", err.Error()) //nolint:errcheck
 			}
 		},
+		ModifyResponse: func(res *http.Response) error {
+			stripCORSHeaders(res.Header)
+			return nil
+		},
 	}
 
 	proxy.ServeHTTP(w, r)
 	return nil
+}
+
+func stripCORSHeaders(h http.Header) {
+	h.Del("Access-Control-Allow-Origin")
+	h.Del("Access-Control-Allow-Methods")
+	h.Del("Access-Control-Allow-Headers")
+	h.Del("Access-Control-Expose-Headers")
+	h.Del("Access-Control-Max-Age")
+	h.Del("Access-Control-Allow-Credentials")
 }
 
 // writeJSONError writes a JSON error response.
