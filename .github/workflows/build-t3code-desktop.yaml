@@ -176,6 +176,14 @@ jobs:
         working-directory: vendor-t3code
         run: pnpm install --frozen-lockfile
 
+      - name: Expose vendor workspace binaries
+        working-directory: vendor-t3code
+        shell: bash
+        run: |
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          vp --version
+
       - name: Build desktop artifact
         working-directory: vendor-t3code
         shell: bash
