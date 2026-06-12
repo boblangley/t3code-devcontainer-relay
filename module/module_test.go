@@ -102,6 +102,50 @@ func TestStore_MarkStopped(t *testing.T) {
 	}
 }
 
+func TestStore_DeleteByID(t *testing.T) {
+	f, err := os.CreateTemp("", "relay-test-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	store, err := OpenStore(f.Name())
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	env := Environment{
+		ID: "env1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status: "stopped", FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	deleted, err := store.DeleteByID("env1")
+	if err != nil {
+		t.Fatalf("DeleteByID: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected DeleteByID to report a deleted row")
+	}
+
+	if _, ok := store.GetByID("env1"); ok {
+		t.Fatal("environment should not exist after DeleteByID")
+	}
+
+	deleted, err = store.DeleteByID("env1")
+	if err != nil {
+		t.Fatalf("second DeleteByID: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected second DeleteByID to report no deleted row")
+	}
+}
+
 func TestStore_UpsertConflict_UpdatesLastSeen(t *testing.T) {
 	f, err := os.CreateTemp("", "relay-test-*.db")
 	if err != nil {
@@ -454,6 +498,53 @@ func TestAPIHandler_ConnectUsesDescriptorEnvironmentID(t *testing.T) {
 	}
 	if resp["environmentId"] != "server-env-1" {
 		t.Errorf("expected descriptor environment id, got %v", resp["environmentId"])
+	}
+}
+
+func TestAPIHandler_DeleteEnvironmentUsesDescriptorEnvironmentID(t *testing.T) {
+	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	env := Environment{
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status:    "stopped",
+		ProbeJSON: `{"environmentId":"server-env-1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27"}`,
+		FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/environments/server-env-1", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if _, ok := store.GetByID("devcontainer-1"); ok {
+		t.Fatal("environment should not exist after DELETE")
+	}
+}
+
+func TestAPIHandler_DeleteEnvironment_NotFound(t *testing.T) {
+	ah, _, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/environments/missing", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

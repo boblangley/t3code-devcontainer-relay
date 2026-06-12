@@ -3,7 +3,7 @@
 A Caddy v2 module that discovers devcontainers via Docker labels, stores them in SQLite, and provides:
 
 - **Proxy handler** (`http.handlers.t3code_relay_proxy`): authenticates Bearer tokens, resolves `Host` to a container IP via the store, and reverse-proxies the request.
-- **API handler** (`http.handlers.t3code_relay_api`): provides `/health`, `/v1/environments`, and per-environment `/status` and `/connect` endpoints.
+- **API handler** (`http.handlers.t3code_relay_api`): provides `/health`, `/v1/environments`, per-environment `/status` and `/connect`, and `DELETE /v1/environments/:id` for forgetting stale rows.
 
 ## Caddyfile global option
 

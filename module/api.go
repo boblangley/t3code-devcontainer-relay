@@ -98,6 +98,8 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 		return a.handleEnvironmentStatus(w, r, envIDFromPath(path, "/status"))
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/connect"):
 		return a.handleEnvironmentConnect(w, r, envIDFromPath(path, "/connect"))
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/environments/"):
+		return a.handleDeleteEnvironment(w, r, envIDFromEnvironmentPath(path))
 	default:
 		return writeJSON(w, http.StatusNotFound, map[string]string{
 			"_tag":   "NotFoundError",
@@ -115,6 +117,16 @@ func envIDFromPath(path, suffix string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+// envIDFromEnvironmentPath extracts the environment ID from a path like
+// /v1/environments/:id, returning empty for nested paths.
+func envIDFromEnvironmentPath(path string) string {
+	id := strings.TrimPrefix(path, "/v1/environments/")
+	if id == path || id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	return id
 }
 
 // environmentEndpoint builds the endpoint object for an environment.
@@ -256,6 +268,36 @@ func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Requ
 		resp["descriptor"] = descriptor
 	}
 	return writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *APIHandler) handleDeleteEnvironment(w http.ResponseWriter, r *http.Request, envID string) error {
+	if envID == "" {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
+		})
+	}
+
+	env, ok := a.lookupEnvironmentByRelayID(envID)
+	if !ok {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
+		})
+	}
+
+	deleted, err := a.app.GetStore().DeleteByID(env.ID)
+	if err != nil {
+		return writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"_tag": "StoreError", "code": "store_error", "reason": "delete_failed",
+		})
+	}
+	if !deleted {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
+		})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 const credChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
