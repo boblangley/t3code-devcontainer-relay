@@ -310,6 +310,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Move latest server tag to this build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_TAG: ${{ needs.resolve-tag.outputs.latest_tag }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          ref="tags/${LATEST_TAG}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/${ref}" \
+              --field sha="${TARGET_SHA}" \
+              --field force=true
+          else
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --field ref="refs/tags/${LATEST_TAG}" \
+              --field sha="${TARGET_SHA}"
+          fi
+
       - name: Create/update latest server alias and upload assets
         uses: softprops/action-gh-release@v2
         with:
