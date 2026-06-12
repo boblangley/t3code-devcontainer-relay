@@ -473,9 +473,33 @@ func TestAPIHandler_ConnectUsesDescriptorEnvironmentID(t *testing.T) {
 	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
 	defer cleanup()
 
+	pairing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/pairing-token" {
+			t.Errorf("unexpected pairing path %q", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected pairing method %q", r.Method)
+		}
+		if r.Header.Get("X-Relay-Secret") != "test-secret" {
+			t.Errorf("missing relay secret header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"pairing-1","credential":"pairing-token","expiresAt":"2026-06-12T00:00:00Z"}`))
+	}))
+	defer pairing.Close()
+
+	host, portString, err := net.SplitHostPort(pairing.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split pairing address: %v", err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatalf("parse pairing port: %v", err)
+	}
+
 	env := Environment{
 		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
-		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Hostname: "myrepo.t3.example.com", IP: host, Port: port,
 		Status:    "running",
 		ProbeJSON: `{"environmentId":"server-env-1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27"}`,
 		FirstSeen: 1000, LastSeen: 1000,
@@ -501,6 +525,12 @@ func TestAPIHandler_ConnectUsesDescriptorEnvironmentID(t *testing.T) {
 	}
 	if resp["environmentId"] != "server-env-1" {
 		t.Errorf("expected descriptor environment id, got %v", resp["environmentId"])
+	}
+	if resp["credential"] != "pairing-token" {
+		t.Errorf("expected environment-issued pairing token, got %v", resp["credential"])
+	}
+	if resp["expiresAt"] != "2026-06-12T00:00:00Z" {
+		t.Errorf("expected environment-issued expiry, got %v", resp["expiresAt"])
 	}
 }
 

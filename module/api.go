@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -292,14 +292,51 @@ func (a *APIHandler) handleDeleteEnvironment(w http.ResponseWriter, r *http.Requ
 	return nil
 }
 
-const credChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+type pairingCredentialResponse struct {
+	Credential string `json:"credential"`
+	ExpiresAt  string `json:"expiresAt"`
+}
 
-func randomCredential(n int) string {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = credChars[rand.Intn(len(credChars))]
+func mintEnvironmentPairingCredential(env Environment, sharedSecret []byte) (pairingCredentialResponse, int, error) {
+	req, err := http.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("http://%s:%d/api/auth/pairing-token", env.IP, env.Port),
+		strings.NewReader("{}"),
+	)
+	if err != nil {
+		return pairingCredentialResponse{}, http.StatusBadGateway, err
 	}
-	return string(b)
+	req.Header.Set("Content-Type", "application/json")
+	if len(sharedSecret) > 0 {
+		req.Header.Set("X-Relay-Secret", string(sharedSecret))
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		if os.IsTimeout(err) {
+			return pairingCredentialResponse{}, http.StatusGatewayTimeout, err
+		}
+		return pairingCredentialResponse{}, http.StatusBadGateway, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+	if err != nil {
+		return pairingCredentialResponse{}, http.StatusBadGateway, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return pairingCredentialResponse{}, http.StatusBadGateway, fmt.Errorf("pairing-token returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var credential pairingCredentialResponse
+	if err := json.Unmarshal(body, &credential); err != nil {
+		return pairingCredentialResponse{}, http.StatusBadGateway, err
+	}
+	if strings.TrimSpace(credential.Credential) == "" || strings.TrimSpace(credential.ExpiresAt) == "" {
+		return pairingCredentialResponse{}, http.StatusBadGateway, fmt.Errorf("pairing-token response missing credential or expiresAt")
+	}
+	return credential, http.StatusOK, nil
 }
 
 func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Request, envID string) error {
@@ -315,14 +352,28 @@ func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Req
 		})
 	}
 
-	credential := randomCredential(12)
-	expiresAt := time.Now().UTC().Add(2 * time.Minute).Format(time.RFC3339)
+	credential, status, err := mintEnvironmentPairingCredential(env, a.app.SharedSecret())
+	if err != nil {
+		if status == http.StatusGatewayTimeout {
+			return writeJSON(w, status, map[string]string{
+				"_tag":    "RelayEnvironmentEndpointTimedOutError",
+				"code":    "environment_endpoint_timed_out",
+				"traceId": "self-hosted-relay",
+			})
+		}
+		return writeJSON(w, status, map[string]string{
+			"_tag":    "RelayEnvironmentEndpointUnavailableError",
+			"code":    "environment_endpoint_unavailable",
+			"reason":  "endpoint_request_failed",
+			"traceId": "self-hosted-relay",
+		})
+	}
 
 	return writeJSON(w, http.StatusOK, map[string]any{
 		"environmentId": relayEnvironmentID(env),
 		"endpoint":      environmentEndpoint(env),
-		"credential":    credential,
-		"expiresAt":     expiresAt,
+		"credential":    credential.Credential,
+		"expiresAt":     credential.ExpiresAt,
 	})
 }
 
