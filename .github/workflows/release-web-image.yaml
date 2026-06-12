@@ -6,7 +6,7 @@
 #          submodules recursively.
 #
 # Triggers:
-#   - push of version tags matching v* (e.g. v0.1.0)
+#   - push to main when vendor-t3code or vendor/t3code.yml changes
 #   - workflow_dispatch (manual run)
 #
 # Pushes to: ghcr.io/boblangley/t3code-relay-web
@@ -20,8 +20,14 @@ name: Release – Web Image
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+    paths:
+      - "vendor-t3code"
+      - "vendor/t3code.yml"
+      - "web/**"
+      - ".github/workflows/release-web-image.yaml"
+      - "scripts/validate-vendor-t3code.sh"
   workflow_dispatch:
 
 permissions:
@@ -50,6 +56,32 @@ jobs:
         # pnpm workspace, so we never recurse into them.
         run: git submodule update --init --depth=1 vendor-t3code
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Validate vendor manifest
+        run: bash scripts/validate-vendor-t3code.sh
+
+      - name: Read vendor manifest
+        id: vendor
+        run: |
+          manifest_value() {
+            awk -F':[[:space:]]*' -v key="$1" '
+              $1 ~ "^[[:space:]]*" key "$" {
+                value = $2
+                sub(/[[:space:]]+#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' vendor/t3code.yml
+          }
+          echo "release_version=$(manifest_value releaseVersion)" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$(manifest_value forkTag)" >> "$GITHUB_OUTPUT"
+          echo "fork_commit=$(manifest_value forkCommit)" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU (for cross-arch emulation)
         uses: docker/setup-qemu-action@v3
 
@@ -69,17 +101,13 @@ jobs:
         with:
           images: ghcr.io/boblangley/t3code-relay-web
           tags: |
-            # Tag `latest` on every tag push.
-            # NOTE: enable={{is_default_branch}} is intentionally NOT used here
-            # because this workflow is tag-triggered; the runner HEAD is detached
-            # at the tag, so is_default_branch would always be false.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            # Semver tags from the git tag (e.g. v0.1.0 → 0.1.0, 0.1, 0)
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # Also tag the full git tag string as-is (e.g. v0.1.0)
-            type=ref,event=tag
+            type=raw,value=latest
+            type=raw,value=${{ steps.vendor.outputs.release_version }}
+            type=raw,value=t3code-web-${{ steps.vendor.outputs.release_version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.vendor.outputs.release_version }}
+            org.opencontainers.image.revision=${{ steps.vendor.outputs.fork_commit }}
+            org.opencontainers.image.ref.name=${{ steps.vendor.outputs.fork_tag }}
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6

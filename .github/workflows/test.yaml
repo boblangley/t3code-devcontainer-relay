@@ -5,6 +5,9 @@
 #   - module-test: runs `go test ./...` against the t3code-relay Caddy module
 #     in module/ (Go source for the relay).
 #
+#   - vendor-manifest-test: verifies vendor/t3code.yml matches the vendor-t3code
+#     submodule commit, fork tag, and fork package versions.
+#
 #   - feature-test: runs `devcontainers features test` for the t3code-server
 #     feature via devcontainers/action@v1. Note: the feature test exercises
 #     install.sh, which downloads the server artifact from a GitHub Release. On
@@ -31,6 +34,27 @@ permissions:
   contents: read
 
 jobs:
+  # --------------------------------------------------------------------------
+  # Vendor manifest validation for the t3code fork submodule.
+  # --------------------------------------------------------------------------
+  vendor-manifest-test:
+    name: Vendor manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch vendor-t3code submodule (non-recursive)
+        run: git submodule update --init --depth=1 vendor-t3code
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Validate vendor manifest
+        run: bash scripts/validate-vendor-t3code.sh
+
   # --------------------------------------------------------------------------
   # Go module tests for the t3code-relay Caddy module (module/).
   # --------------------------------------------------------------------------

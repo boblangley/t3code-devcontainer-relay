@@ -4,8 +4,8 @@
 #          branch bearer-auth) for linux/amd64 and linux/arm64 (glibc), then
 #          attach the tarballs as assets to a GitHub Release on this repo.
 #
-#          The release tag format is `t3code-server-<tag>` (e.g.
-#          `t3code-server-v1.2.3`), matching the URL convention that
+#          The release tag format is `t3code-server-<releaseVersion>` (e.g.
+#          `t3code-server-0.0.28-wyrd.1`), matching the URL convention that
 #          features/src/t3code-server/install.sh uses when downloading:
 #
 #            https://github.com/boblangley/t3code-devcontainer-relay/releases/download/
@@ -16,10 +16,8 @@
 #          in this repo, such as devcontainer feature releases.
 #
 # Triggers:
-#   - workflow_dispatch with a `tag` input (default: derived from submodule SHA)
-#   - schedule: weekly on Mondays at 02:00 UTC to pick up submodule pin bumps
-#     automatically (optional; disable by removing the schedule block if you
-#     prefer fully manual releases).
+#   - push to main when vendor-t3code or vendor/t3code.yml changes
+#   - workflow_dispatch with an optional releaseVersion input
 #
 # Coordination points:
 #   - PACKAGE_FILTER below must match the pnpm workspace package name/filter
@@ -35,19 +33,23 @@
 name: Build – T3Code Server Artifacts
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "vendor-t3code"
+      - "vendor/t3code.yml"
+      - ".github/workflows/build-t3code-artifacts.yaml"
+      - "scripts/validate-vendor-t3code.sh"
   workflow_dispatch:
     inputs:
-      tag:
+      releaseVersion:
         description: >
-          Release tag suffix (e.g. "v1.2.3"). The GitHub Release will be tagged
-          "t3code-server-<tag>". Leave blank to auto-derive from the submodule
-          SHA (short, e.g. t3code-server-abc1234).
+          Release version suffix (e.g. "0.0.28-wyrd.1"). The GitHub Release
+          will be tagged "t3code-server-<releaseVersion>". Leave blank to use
+          vendor/t3code.yml releaseVersion.
         required: false
         default: ""
-  schedule:
-    # Weekly build on Mondays at 02:00 UTC to catch submodule pin updates.
-    # Remove this block if you prefer fully explicit manual releases.
-    - cron: "0 2 * * 1"
 
 permissions:
   contents: write
@@ -81,6 +83,9 @@ jobs:
       release_tag: ${{ steps.tag.outputs.release_tag }}
       artifact_tag: ${{ steps.tag.outputs.artifact_tag }}
       latest_tag: ${{ steps.tag.outputs.latest_tag }}
+      fork_tag: ${{ steps.vendor.outputs.fork_tag }}
+      fork_commit: ${{ steps.vendor.outputs.fork_commit }}
+      upstream_version: ${{ steps.vendor.outputs.upstream_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -90,15 +95,41 @@ jobs:
       - name: Fetch vendor-t3code submodule (non-recursive)
         run: git submodule update --init --depth=1 vendor-t3code
 
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate vendor manifest
+        run: bash scripts/validate-vendor-t3code.sh
+
+      - name: Read vendor manifest
+        id: vendor
+        run: |
+          manifest_value() {
+            awk -F':[[:space:]]*' -v key="$1" '
+              $1 ~ "^[[:space:]]*" key "$" {
+                value = $2
+                sub(/[[:space:]]+#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' vendor/t3code.yml
+          }
+          echo "release_version=$(manifest_value releaseVersion)" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$(manifest_value forkTag)" >> "$GITHUB_OUTPUT"
+          echo "fork_commit=$(manifest_value forkCommit)" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$(manifest_value upstreamVersion)" >> "$GITHUB_OUTPUT"
+
       - name: Determine release tag
         id: tag
         run: |
-          INPUT_TAG="${{ github.event.inputs.tag }}"
-          if [[ -n "$INPUT_TAG" ]]; then
-            ARTIFACT_TAG="$INPUT_TAG"
+          INPUT_VERSION="${{ github.event.inputs.releaseVersion }}"
+          if [[ -n "$INPUT_VERSION" ]]; then
+            ARTIFACT_TAG="$INPUT_VERSION"
           else
-            # Derive a short tag from the submodule HEAD SHA
-            ARTIFACT_TAG="$(git -C vendor-t3code rev-parse --short HEAD)"
+            ARTIFACT_TAG="${{ steps.vendor.outputs.release_version }}"
           fi
           RELEASE_TAG="t3code-server-${ARTIFACT_TAG}"
           LATEST_TAG="t3code-server-latest"
@@ -260,7 +291,10 @@ jobs:
           body: |
             Forked T3Code server build (bearer-auth branch) for linux/amd64 and linux/arm64.
 
-            Built from submodule pin: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+            Release version: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+            Upstream version: `${{ needs.resolve-tag.outputs.upstream_version }}`
+            Fork tag: `${{ needs.resolve-tag.outputs.fork_tag }}`
+            Fork commit: `${{ needs.resolve-tag.outputs.fork_commit }}`
 
             **Assets:**
             - `t3code-server-linux-amd64.tar.gz` — for amd64 (x86_64) hosts
@@ -285,7 +319,9 @@ jobs:
             Floating alias for the latest forked T3Code server build.
 
             Current versioned release: `${{ needs.resolve-tag.outputs.release_tag }}`
-            Built from submodule pin: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+            Release version: `${{ needs.resolve-tag.outputs.artifact_tag }}`
+            Fork tag: `${{ needs.resolve-tag.outputs.fork_tag }}`
+            Fork commit: `${{ needs.resolve-tag.outputs.fork_commit }}`
 
             These artifacts are consumed when the `t3code-server` devcontainer feature
             is configured with `version=latest`.
