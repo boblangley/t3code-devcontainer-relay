@@ -11,7 +11,7 @@
 #          build without knowing the manifest release version.
 #
 # Triggers:
-#   - push to main when vendor-t3code or vendor/t3code.yml changes
+#   - push of tags matching t3code-desktop-*
 #   - workflow_dispatch with an optional releaseVersion input
 #
 # Notes:
@@ -24,13 +24,9 @@ name: Build – T3Code Desktop Artifacts
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "vendor-t3code"
-      - "vendor/t3code.yml"
-      - ".github/workflows/build-t3code-desktop.yaml"
-      - "scripts/validate-vendor-t3code.sh"
+    tags:
+      - "t3code-desktop-*"
+      - "!t3code-desktop-latest"
   workflow_dispatch:
     inputs:
       releaseVersion:
@@ -95,14 +91,24 @@ jobs:
       - name: Determine release tag
         id: tag
         run: |
-          INPUT_VERSION="${{ github.event.inputs.releaseVersion }}"
-          if [[ -n "$INPUT_VERSION" ]]; then
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+            case "$RELEASE_TAG" in
+              t3code-desktop-*) ARTIFACT_TAG="${RELEASE_TAG#t3code-desktop-}" ;;
+              *) echo "Unexpected tag: $RELEASE_TAG" >&2; exit 1 ;;
+            esac
+          elif [[ -n "${{ github.event.inputs.releaseVersion }}" ]]; then
+            INPUT_VERSION="${{ github.event.inputs.releaseVersion }}"
             ARTIFACT_TAG="$INPUT_VERSION"
           else
             ARTIFACT_TAG="${{ steps.vendor.outputs.release_version }}"
+            RELEASE_TAG="t3code-desktop-${ARTIFACT_TAG}"
           fi
-          RELEASE_TAG="t3code-desktop-${ARTIFACT_TAG}"
           LATEST_TAG="t3code-desktop-latest"
+          if [[ "$ARTIFACT_TAG" != "${{ steps.vendor.outputs.release_version }}" ]]; then
+            echo "Artifact tag ${ARTIFACT_TAG} does not match vendor/t3code.yml releaseVersion ${{ steps.vendor.outputs.release_version }}." >&2
+            exit 1
+          fi
           echo "artifact_tag=${ARTIFACT_TAG}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
@@ -263,6 +269,29 @@ jobs:
           files: desktop-release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move latest desktop tag to this build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_TAG: ${{ needs.resolve-tag.outputs.latest_tag }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          ref="tags/${LATEST_TAG}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/${ref}" \
+              --field sha="${TARGET_SHA}" \
+              --field force=true
+          else
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --field ref="refs/tags/${LATEST_TAG}" \
+              --field sha="${TARGET_SHA}"
+          fi
 
       - name: Create/update latest desktop alias and upload assets
         uses: softprops/action-gh-release@v2

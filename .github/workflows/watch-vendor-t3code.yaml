@@ -1,0 +1,251 @@
+name: Watch – Vendored T3Code
+
+on:
+  schedule:
+    # Check twice daily, after the fork-side upstream watcher/tagger has had
+    # time to run.
+    - cron: "17 7,19 * * *"
+  workflow_dispatch:
+    inputs:
+      forkTag:
+        description: "Optional fork tag override, e.g. t3code-0.0.28-boblangley.1."
+        required: false
+        default: ""
+      dryRun:
+        description: "Resolve and validate the update without pushing a branch or opening a PR."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  FORK_REPOSITORY: boblangley/t3code
+  FORK_REMOTE_URL: https://github.com/boblangley/t3code.git
+  VENDOR_SUBMODULE: vendor-t3code
+  VENDOR_MANIFEST: vendor/t3code.yml
+
+jobs:
+  update:
+    name: Open PR for newest fork tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Keep submodule handling non-recursive. The fork has an orphan nested
+          # gitlink that breaks recursive submodule operations.
+          submodules: false
+
+      - name: Fetch current vendor submodule
+        run: git submodule update --init --depth=1 "$VENDOR_SUBMODULE"
+
+      - name: Resolve newest fork tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manifest_value() {
+            awk -F':[[:space:]]*' -v key="$1" '
+              $1 ~ "^[[:space:]]*" key "$" {
+                value = $2
+                sub(/[[:space:]]+#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' "$VENDOR_MANIFEST"
+          }
+
+          CURRENT_TAG="$(manifest_value forkTag)"
+          OVERRIDE_TAG="${{ github.event.inputs.forkTag }}"
+
+          if [[ -n "$OVERRIDE_TAG" ]]; then
+            TAG_LIST="$OVERRIDE_TAG"
+          else
+            TAG_LIST="$(
+              git ls-remote --tags --refs "$FORK_REMOTE_URL" "t3code-*-boblangley.*" |
+                awk '{ sub(/^refs\/tags\//, "", $2); print $2 }'
+            )"
+          fi
+
+          if [[ -z "$TAG_LIST" ]]; then
+            echo "No matching fork tags found."
+            echo "should_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LATEST_TAG="$(
+            TAG_LIST="$TAG_LIST" node <<'NODE'
+          const tags = process.env.TAG_LIST
+            .split(/\r?\n/)
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+
+          const parse = (tag) => {
+            const match = /^t3code-([0-9]+)[.]([0-9]+)[.]([0-9]+)-boblangley[.]([0-9]+)$/.exec(tag);
+            if (!match) return undefined;
+            const [, major, minor, patch, revision] = match;
+            return {
+              tag,
+              upstreamVersion: `${major}.${minor}.${patch}`,
+              releaseVersion: `${major}.${minor}.${patch}-boblangley.${revision}`,
+              parts: [major, minor, patch, revision].map((part) => Number.parseInt(part, 10)),
+            };
+          };
+
+          const parsed = tags.map(parse).filter(Boolean);
+          if (parsed.length === 0) {
+            throw new Error("No supported fork tags found. Expected t3code-<major>.<minor>.<patch>-boblangley.<revision>.");
+          }
+
+          parsed.sort((a, b) => {
+            for (let index = 0; index < a.parts.length; index += 1) {
+              if (a.parts[index] !== b.parts[index]) {
+                return b.parts[index] - a.parts[index];
+              }
+            }
+            return a.tag.localeCompare(b.tag);
+          });
+
+          console.log(parsed[0].tag);
+          NODE
+          )"
+
+          if [[ "$LATEST_TAG" == "$CURRENT_TAG" ]]; then
+            echo "Vendor manifest already references newest fork tag: $CURRENT_TAG"
+            echo "should_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ ! "$LATEST_TAG" =~ ^t3code-([0-9]+[.][0-9]+[.][0-9]+)-boblangley[.]([0-9]+)$ ]]; then
+            echo "Unsupported fork tag: $LATEST_TAG" >&2
+            exit 1
+          fi
+
+          UPSTREAM_VERSION="${BASH_REMATCH[1]}"
+          RELEASE_VERSION="${UPSTREAM_VERSION}-boblangley.${BASH_REMATCH[2]}"
+          BRANCH_NAME="chore/update-vendor-t3code-${LATEST_TAG}"
+
+          echo "current_tag=$CURRENT_TAG" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "should_update=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update vendor submodule and manifest
+        if: steps.resolve.outputs.should_update == 'true'
+        id: update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FORK_TAG="${{ steps.resolve.outputs.fork_tag }}"
+          UPSTREAM_VERSION="${{ steps.resolve.outputs.upstream_version }}"
+          RELEASE_VERSION="${{ steps.resolve.outputs.release_version }}"
+
+          git -C "$VENDOR_SUBMODULE" fetch --depth=1 origin "refs/tags/${FORK_TAG}:refs/tags/${FORK_TAG}"
+          git -C "$VENDOR_SUBMODULE" checkout --detach "$FORK_TAG"
+          FORK_COMMIT="$(git -C "$VENDOR_SUBMODULE" rev-parse HEAD)"
+          export FORK_COMMIT
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          const manifestPath = process.env.VENDOR_MANIFEST;
+          const values = {
+            upstreamVersion: process.env.UPSTREAM_VERSION,
+            forkTag: process.env.FORK_TAG,
+            forkCommit: process.env.FORK_COMMIT,
+            releaseVersion: process.env.RELEASE_VERSION,
+            releaseMilestone: process.env.FORK_TAG,
+          };
+
+          let manifest = fs.readFileSync(manifestPath, "utf8");
+          for (const [key, value] of Object.entries(values)) {
+            const pattern = new RegExp(`^${key}:.*$`, "m");
+            if (!pattern.test(manifest)) {
+              throw new Error(`Manifest is missing ${key}`);
+            }
+            manifest = manifest.replace(pattern, `${key}: ${value}`);
+          }
+          fs.writeFileSync(manifestPath, manifest);
+          NODE
+
+          bash scripts/validate-vendor-t3code.sh
+
+          echo "fork_commit=$FORK_COMMIT" >> "$GITHUB_OUTPUT"
+        env:
+          FORK_TAG: ${{ steps.resolve.outputs.fork_tag }}
+          UPSTREAM_VERSION: ${{ steps.resolve.outputs.upstream_version }}
+          RELEASE_VERSION: ${{ steps.resolve.outputs.release_version }}
+
+      - name: Show dry-run diff
+        if: steps.resolve.outputs.should_update == 'true' && github.event.inputs.dryRun == 'true'
+        run: git diff --submodule=short -- "$VENDOR_SUBMODULE" "$VENDOR_MANIFEST"
+
+      - name: Create or update pull request
+        if: steps.resolve.outputs.should_update == 'true' && github.event.inputs.dryRun != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELAY_AUTOMATION_TOKEN || github.token }}
+          BRANCH_NAME: ${{ steps.resolve.outputs.branch_name }}
+          FORK_TAG: ${{ steps.resolve.outputs.fork_tag }}
+          CURRENT_TAG: ${{ steps.resolve.outputs.current_tag }}
+          RELEASE_VERSION: ${{ steps.resolve.outputs.release_version }}
+          FORK_COMMIT: ${{ steps.update.outputs.fork_commit }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH_NAME"
+          git add "$VENDOR_SUBMODULE" "$VENDOR_MANIFEST"
+
+          if git diff --cached --quiet; then
+            echo "No vendor changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update vendored T3Code to ${FORK_TAG}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${BRANCH_NAME}" --force-with-lease
+
+          PR_BODY="$(
+            cat <<EOF
+          Updates the vendored T3Code fork from \`${CURRENT_TAG}\` to \`${FORK_TAG}\`.
+
+          The fork tag is created only after the \`bearer-auth\` fork PR has
+          merged, so code-level validation happens in the fork before this
+          pointer update exists. This PR updates this repository to consume
+          that already-tagged fork revision.
+
+          Changes:
+          - updates \`vendor-t3code\` to \`${FORK_COMMIT}\`
+          - updates \`vendor/t3code.yml\`
+
+          Release version: \`${RELEASE_VERSION}\`
+
+          Merging this PR to \`main\` creates the server, web, and desktop release tags.
+          Those tags trigger the artifact workflows in this repository.
+          EOF
+          )"
+
+          if gh pr view "$BRANCH_NAME" --json number --jq .number >/tmp/pr-number 2>/dev/null; then
+            PR_NUMBER="$(cat /tmp/pr-number)"
+            gh pr edit "$PR_NUMBER" \
+              --title "Update vendored T3Code to ${FORK_TAG}" \
+              --body "$PR_BODY" \
+              --base main
+            echo "Updated PR #${PR_NUMBER}."
+          else
+            gh pr create \
+              --title "Update vendored T3Code to ${FORK_TAG}" \
+              --body "$PR_BODY" \
+              --base main \
+              --head "$BRANCH_NAME"
+          fi
