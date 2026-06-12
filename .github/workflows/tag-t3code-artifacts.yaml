@@ -1,0 +1,105 @@
+name: Tag – T3Code Artifacts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "vendor-t3code"
+      - "vendor/t3code.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag artifact releases
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Fetch vendor-t3code submodule (non-recursive)
+        run: git submodule update --init --depth=1 vendor-t3code
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Validate vendor manifest
+        run: bash scripts/validate-vendor-t3code.sh
+
+      - name: Read vendor manifest
+        id: vendor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manifest_value() {
+            awk -F':[[:space:]]*' -v key="$1" '
+              $1 ~ "^[[:space:]]*" key "$" {
+                value = $2
+                sub(/[[:space:]]+#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' vendor/t3code.yml
+          }
+
+          echo "release_version=$(manifest_value releaseVersion)" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$(manifest_value forkTag)" >> "$GITHUB_OUTPUT"
+          echo "fork_commit=$(manifest_value forkCommit)" >> "$GITHUB_OUTPUT"
+
+      - name: Create artifact tags
+        env:
+          GH_TOKEN: ${{ secrets.RELAY_AUTOMATION_TOKEN }}
+          RELEASE_VERSION: ${{ steps.vendor.outputs.release_version }}
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "RELAY_AUTOMATION_TOKEN is required so pushed tags trigger artifact workflows." >&2
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid releaseVersion: $RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+          tags=(
+            "t3code-server-${RELEASE_VERSION}"
+            "t3code-web-${RELEASE_VERSION}"
+            "t3code-desktop-${RELEASE_VERSION}"
+          )
+
+          for tag in "${tags[@]}"; do
+            ref="tags/${tag}"
+            existing_sha="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" --jq '.object.sha' 2>/dev/null || true
+            )"
+
+            if [[ -n "$existing_sha" ]]; then
+              if [[ "$existing_sha" == "$TARGET_SHA" ]]; then
+                echo "Tag ${tag} already points at ${TARGET_SHA}; nothing to do."
+                continue
+              fi
+
+              echo "Tag ${tag} already exists at ${existing_sha}, not ${TARGET_SHA}. Refusing to move it." >&2
+              exit 1
+            fi
+
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --field ref="refs/tags/${tag}" \
+              --field sha="${TARGET_SHA}"
+            echo "Created ${tag} at ${TARGET_SHA}."
+          done

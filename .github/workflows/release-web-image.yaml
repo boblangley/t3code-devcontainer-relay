@@ -6,7 +6,6 @@
 #          submodules recursively.
 #
 # Triggers:
-#   - push to main when vendor-t3code or vendor/t3code.yml changes
 #   - push of fork-derived web image tags matching t3code-web-*
 #   - workflow_dispatch (manual run)
 #
@@ -21,16 +20,8 @@ name: Release – Web Image
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "t3code-web-*"
-    paths:
-      - "vendor-t3code"
-      - "vendor/t3code.yml"
-      - "web/**"
-      - ".github/workflows/release-web-image.yaml"
-      - "scripts/validate-vendor-t3code.sh"
   workflow_dispatch:
     inputs:
       releaseVersion:
