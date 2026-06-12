@@ -47,7 +47,13 @@ it with any configuration you already have:
 ```jsonc
 {
   "features": {
-    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {}
+    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+      "stateParentDir": "/mnt/t3code-state"
+    }
+  },
+  "containerEnv": {
+    "DEVCONTAINER_ID": "${devcontainerId}",
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}"
   },
   "runArgs": [
     "--network=dev-ingress",
@@ -56,7 +62,8 @@ it with any configuration you already have:
     "--name", "myrepo"
   ],
   "mounts": [
-    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly"
+    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly",
+    "source=${localEnv:HOME}/.local/share/t3code-devcontainers,target=/mnt/t3code-state,type=bind"
   ]
 }
 ```
@@ -71,7 +78,9 @@ subdomain: `myrepo.t3.example.com`.
 ### `features` block
 
 ```jsonc
-"ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {}
+"ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+  "stateParentDir": "/mnt/t3code-state"
+}
 ```
 
 This installs the `t3code-server` feature inside the devcontainer. The feature downloads the
@@ -83,6 +92,26 @@ The `:1` at the end pins the major version so you get updates within the same ma
 
 Node.js (required by the server) is installed automatically as a dependency of this feature —
 you do not need to add a Node feature separately.
+
+`stateParentDir` points at a durable bind mount. At container startup, the feature stores server
+state under `/mnt/t3code-state/<DEVCONTAINER_ID>` so each devcontainer keeps a stable environment
+identity and SQLite database without sharing state with other devcontainers.
+
+### `containerEnv`
+
+```jsonc
+"DEVCONTAINER_ID": "${devcontainerId}"
+```
+
+Exposes the stable devcontainer ID inside the container. The feature uses this as the state
+subdirectory name when `stateParentDir` is set.
+
+```jsonc
+"WORKSPACE_HOME": "${containerWorkspaceFolder}"
+```
+
+Exposes the workspace path inside the container. The feature passes this as the T3 server cwd so
+the initial project is the workspace instead of `/`.
 
 ### `runArgs`
 

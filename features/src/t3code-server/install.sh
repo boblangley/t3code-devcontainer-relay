@@ -3,9 +3,13 @@
 #
 # Called by the devcontainer CLI during container build.  The feature options
 # are injected as environment variables by the CLI (uppercased option IDs):
-#   VERSION     — artifact tag, default "latest"
-#   PORT        — listen port, default "3773"
-#   SECRETPATH  — secret file path, default "/run/t3code/relay-secret"
+#   VERSION        — artifact tag, default "latest"
+#   PORT           — listen port, default "3773"
+#   SECRETPATH     — secret file path, default "/run/t3code/relay-secret"
+#   BASEDIR        — explicit T3CODE_HOME override, default ""
+#   STATEPARENTDIR — durable parent for per-devcontainer T3CODE_HOME, default ""
+#   WORKSPACEHOME  — explicit server cwd override, default ""
+#   RUNASUSER      — runtime user for the server process, default "vscode"
 #
 # Supported base image: mcr.microsoft.com/devcontainers/base:noble ONLY.
 # This script assumes Ubuntu 24.04 (glibc, apt, bash) and will fail fast
@@ -26,6 +30,10 @@ info() { echo "INFO  [t3code-server feature]: $*"; }
 FEATURE_VERSION="${VERSION:-latest}"
 FEATURE_PORT="${PORT:-3773}"
 FEATURE_SECRETPATH="${SECRETPATH:-/run/t3code/relay-secret}"
+FEATURE_BASEDIR="${BASEDIR:-}"
+FEATURE_STATEPARENTDIR="${STATEPARENTDIR:-}"
+FEATURE_WORKSPACEHOME="${WORKSPACEHOME:-}"
+FEATURE_RUNASUSER="${RUNASUSER:-vscode}"
 
 # ---------------------------------------------------------------------------
 # Guard 1: Ubuntu noble (24.04) only
@@ -62,8 +70,23 @@ info "Node check passed: ${NODE_VERSION}"
 VERSION="${FEATURE_VERSION}"
 PORT="${FEATURE_PORT}"
 SECRETPATH="${FEATURE_SECRETPATH}"
+BASEDIR="${FEATURE_BASEDIR}"
+STATEPARENTDIR="${FEATURE_STATEPARENTDIR}"
+WORKSPACEHOME="${FEATURE_WORKSPACEHOME}"
+RUNASUSER="${FEATURE_RUNASUSER}"
 
 info "Installing t3code-server version='${VERSION}' port='${PORT}' secretPath='${SECRETPATH}'"
+if [ -n "${BASEDIR}" ]; then
+    info "Using explicit baseDir='${BASEDIR}'"
+elif [ -n "${STATEPARENTDIR}" ]; then
+    info "Using stateParentDir='${STATEPARENTDIR}'"
+fi
+if [ -n "${WORKSPACEHOME}" ]; then
+    info "Using workspaceHome='${WORKSPACEHOME}'"
+fi
+if [ -n "${RUNASUSER}" ]; then
+    info "Server process will run as user '${RUNASUSER}' when possible"
+fi
 
 # ---------------------------------------------------------------------------
 # Determine target architecture
@@ -182,6 +205,10 @@ T3CODE_INSTALL_DIR="${INSTALL_DIR}"
 T3CODE_PORT="${PORT}"
 T3CODE_SECRETPATH="${SECRETPATH}"
 T3CODE_VERSION="${VERSION}"
+T3CODE_BASEDIR="${BASEDIR}"
+T3CODE_STATEPARENTDIR="${STATEPARENTDIR}"
+T3CODE_WORKSPACEHOME="${WORKSPACEHOME}"
+T3CODE_RUNASUSER="${RUNASUSER}"
 EOF
 
 chmod 644 /usr/local/etc/t3code-server.env

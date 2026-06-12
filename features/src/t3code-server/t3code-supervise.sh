@@ -41,6 +41,10 @@ fi
 T3CODE_INSTALL_DIR="${T3CODE_INSTALL_DIR:-/usr/local/lib/t3code-server}"
 T3CODE_PORT="${T3CODE_PORT:-3773}"
 T3CODE_SECRETPATH="${T3CODE_SECRETPATH:-/run/t3code/relay-secret}"
+T3CODE_BASEDIR="${T3CODE_BASEDIR:-}"
+T3CODE_STATEPARENTDIR="${T3CODE_STATEPARENTDIR:-}"
+T3CODE_WORKSPACEHOME="${T3CODE_WORKSPACEHOME:-}"
+T3CODE_RUNASUSER="${T3CODE_RUNASUSER:-vscode}"
 
 # ---------------------------------------------------------------------------
 # Env vars passed to the t3code server process
@@ -56,10 +60,114 @@ T3CODE_SECRETPATH="${T3CODE_SECRETPATH:-/run/t3code/relay-secret}"
 #                              reads this file on startup and requires an
 #                              X-Relay-Secret header on inbound requests whose
 #                              value matches the file contents.
+#   T3CODE_HOME              — Optional base directory for server state. When
+#                              stateParentDir is configured, the supervisor
+#                              derives this at container-start time from
+#                              DEVCONTAINER_ID or HOSTNAME so multiple
+#                              devcontainers can share one durable parent
+#                              mount without sharing one SQLite DB.
+#   T3CODE_RUNASUSER         — Optional Linux user for the server process. The
+#                              supervisor runs as the entrypoint user, then
+#                              drops privileges before starting Node when this
+#                              is set and the entrypoint user is root.
 # ---------------------------------------------------------------------------
 
 SERVER_PORT="${T3CODE_PORT}"
 SERVER_SECRET_FILE="${T3CODE_SECRETPATH}"
+SERVER_NODE_BIN="$(command -v node 2>/dev/null || true)"
+
+_is_non_empty() {
+    [ -n "${1:-}" ]
+}
+
+_trim_trailing_slashes() {
+    local value="${1:-}"
+    while [ "${value}" != "/" ] && [ "${value%/}" != "${value}" ]; do
+        value="${value%/}"
+    done
+    printf '%s' "${value}"
+}
+
+_sanitize_path_segment() {
+    printf '%s' "${1:-}" | tr '/:' '__'
+}
+
+_resolve_t3code_home() {
+    if _is_non_empty "${T3CODE_BASEDIR}"; then
+        printf '%s' "${T3CODE_BASEDIR}"
+        return 0
+    fi
+
+    if _is_non_empty "${T3CODE_STATEPARENTDIR}"; then
+        local parent
+        local raw_id
+        local state_id
+        parent="$(_trim_trailing_slashes "${T3CODE_STATEPARENTDIR}")"
+        raw_id="${DEVCONTAINER_ID:-${HOSTNAME:-unknown}}"
+        state_id="$(_sanitize_path_segment "${raw_id}")"
+        if ! _is_non_empty "${state_id}"; then
+            state_id="unknown"
+        fi
+        printf '%s/%s' "${parent}" "${state_id}"
+        return 0
+    fi
+
+    if _is_non_empty "${T3CODE_HOME:-}"; then
+        printf '%s' "${T3CODE_HOME}"
+    fi
+}
+
+_resolve_workspace_home() {
+    if _is_non_empty "${T3CODE_WORKSPACEHOME}"; then
+        printf '%s' "${T3CODE_WORKSPACEHOME}"
+        return 0
+    fi
+
+    if _is_non_empty "${WORKSPACE_HOME:-}"; then
+        printf '%s' "${WORKSPACE_HOME}"
+    fi
+}
+
+SERVER_T3CODE_HOME="$(_resolve_t3code_home)"
+SERVER_WORKSPACE_HOME="$(_resolve_workspace_home)"
+SERVER_RUN_AS_USER="${T3CODE_RUNASUSER}"
+
+_run_as_user_exists() {
+    _is_non_empty "${SERVER_RUN_AS_USER}" && id "${SERVER_RUN_AS_USER}" >/dev/null 2>&1
+}
+
+_prepare_server_state_dir() {
+    if ! _is_non_empty "${SERVER_T3CODE_HOME}"; then
+        return 0
+    fi
+
+    mkdir -p "${SERVER_T3CODE_HOME}" 2>/dev/null || true
+
+    if [ "$(id -u)" -eq 0 ] && _run_as_user_exists; then
+        local run_as_group
+        run_as_group="$(id -gn "${SERVER_RUN_AS_USER}" 2>/dev/null || printf '%s' "${SERVER_RUN_AS_USER}")"
+        chown "${SERVER_RUN_AS_USER}:${run_as_group}" "${SERVER_T3CODE_HOME}" 2>/dev/null || true
+    fi
+}
+
+_run_server_command() {
+    local server_args=("$@")
+    local env_args=(
+        "PORT=${SERVER_PORT}"
+        "T3CODE_RELAY_SECRET_FILE=${SERVER_SECRET_FILE}"
+    )
+
+    if _is_non_empty "${SERVER_T3CODE_HOME}"; then
+        env_args+=("T3CODE_HOME=${SERVER_T3CODE_HOME}")
+    fi
+
+    if [ "$(id -u)" -eq 0 ] && _run_as_user_exists; then
+        runuser -u "${SERVER_RUN_AS_USER}" -- env "${env_args[@]}" "${SERVER_NODE_BIN}" "${SERVER_ENTRYPOINT}" "${server_args[@]}"
+        return $?
+    fi
+
+    env "${env_args[@]}" "${SERVER_NODE_BIN}" "${SERVER_ENTRYPOINT}" "${server_args[@]}"
+}
 
 # ---------------------------------------------------------------------------
 # Locate the server entrypoint inside the install dir
@@ -121,18 +229,29 @@ _run_supervisor() {
     local backoff=1
     local max_backoff=30
 
-    echo "[t3code-supervise] Supervisor started (PID ${BASHPID}, port=${SERVER_PORT}, secretPath=${SERVER_SECRET_FILE})" >> "${LOG_FILE}" 2>&1
+    echo "[t3code-supervise] Supervisor started (PID ${BASHPID}, port=${SERVER_PORT}, secretPath=${SERVER_SECRET_FILE}, t3codeHome=${SERVER_T3CODE_HOME:-<server-default>}, workspaceHome=${SERVER_WORKSPACE_HOME:-<server-default>}, runAsUser=${SERVER_RUN_AS_USER:-<entrypoint-user>})" >> "${LOG_FILE}" 2>&1
 
     while true; do
         if [ -z "${SERVER_ENTRYPOINT}" ]; then
             echo "[t3code-supervise] $(date -u +%FT%TZ) Server entrypoint not found in ${T3CODE_INSTALL_DIR}. Retrying in ${backoff}s..." >> "${LOG_FILE}" 2>&1
+        elif [ -z "${SERVER_NODE_BIN}" ]; then
+            echo "[t3code-supervise] $(date -u +%FT%TZ) Node executable not found on PATH. Retrying in ${backoff}s..." >> "${LOG_FILE}" 2>&1
         else
-            echo "[t3code-supervise] $(date -u +%FT%TZ) Starting server: node ${SERVER_ENTRYPOINT}" >> "${LOG_FILE}" 2>&1
+            local server_args=()
+            if _is_non_empty "${SERVER_WORKSPACE_HOME}"; then
+                server_args+=("${SERVER_WORKSPACE_HOME}")
+            fi
+
+            if [ "$(id -u)" -eq 0 ] && _is_non_empty "${SERVER_RUN_AS_USER}" && ! _run_as_user_exists; then
+                echo "[t3code-supervise] $(date -u +%FT%TZ) Configured runAsUser '${SERVER_RUN_AS_USER}' does not exist. Starting server as root." >> "${LOG_FILE}" 2>&1
+            fi
+
+            _prepare_server_state_dir
+
+            echo "[t3code-supervise] $(date -u +%FT%TZ) Starting server as ${SERVER_RUN_AS_USER:-entrypoint user}: ${SERVER_NODE_BIN} ${SERVER_ENTRYPOINT}${SERVER_WORKSPACE_HOME:+ ${SERVER_WORKSPACE_HOME}}" >> "${LOG_FILE}" 2>&1
 
             # Run the server; errors are logged; the loop continues regardless.
-            PORT="${SERVER_PORT}" \
-            T3CODE_RELAY_SECRET_FILE="${SERVER_SECRET_FILE}" \
-            node "${SERVER_ENTRYPOINT}" >> "${LOG_FILE}" 2>&1 || true
+            _run_server_command "${server_args[@]}" >> "${LOG_FILE}" 2>&1 || true
 
             echo "[t3code-supervise] $(date -u +%FT%TZ) Server exited (backoff ${backoff}s)" >> "${LOG_FILE}" 2>&1
         fi

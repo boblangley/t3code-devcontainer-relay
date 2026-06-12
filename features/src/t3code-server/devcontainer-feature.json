@@ -19,6 +19,26 @@
       "type": "string",
       "default": "/run/t3code/relay-secret",
       "description": "Filesystem path inside the container where the shared relay secret file is bind-mounted from the host. The server reads this file and requires matching X-Relay-Secret headers on inbound requests. Must match the mount target in the consumer devcontainer.json."
+    },
+    "baseDir": {
+      "type": "string",
+      "default": "",
+      "description": "Optional explicit T3CODE_HOME/base directory for server state. Takes precedence over stateParentDir and existing T3CODE_HOME. Leave empty to use stateParentDir or the server default."
+    },
+    "stateParentDir": {
+      "type": "string",
+      "default": "",
+      "description": "Optional durable parent directory for server state. When set, the feature uses <stateParentDir>/<DEVCONTAINER_ID-or-HOSTNAME> as T3CODE_HOME so each devcontainer gets isolated persistent state."
+    },
+    "workspaceHome": {
+      "type": "string",
+      "default": "",
+      "description": "Optional workspace cwd passed to the server. Leave empty to use WORKSPACE_HOME from containerEnv when present. This prevents the server from bootstrapping a project at /."
+    },
+    "runAsUser": {
+      "type": "string",
+      "default": "vscode",
+      "description": "Linux user that runs the T3Code server process. The supervisor still starts as the container entrypoint, then drops privileges with runuser when running as root. Set to empty to run as the entrypoint user."
     }
   },
   "dependsOn": {

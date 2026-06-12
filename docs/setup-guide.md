@@ -240,7 +240,8 @@ needed.
 ## Stage 9 — Add your first devcontainer
 
 With the stack running and the client configured, you can make any devcontainer appear in the
-relay automatically by adding four lines to its `devcontainer.json`.
+relay automatically by adding the feature, relay run arguments, and the shared mounts to its
+`devcontainer.json`.
 
 Full details: [add-a-devcontainer.md](add-a-devcontainer.md)
 
@@ -249,7 +250,13 @@ Full details: [add-a-devcontainer.md](add-a-devcontainer.md)
 ```jsonc
 {
   "features": {
-    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {}
+    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+      "stateParentDir": "/mnt/t3code-state"
+    }
+  },
+  "containerEnv": {
+    "DEVCONTAINER_ID": "${devcontainerId}",
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}"
   },
   "runArgs": [
     "--network=dev-ingress",
@@ -258,7 +265,8 @@ Full details: [add-a-devcontainer.md](add-a-devcontainer.md)
     "--name", "myrepo"
   ],
   "mounts": [
-    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly"
+    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly",
+    "source=${localEnv:HOME}/.local/share/t3code-devcontainers,target=/mnt/t3code-state,type=bind"
   ]
 }
 ```

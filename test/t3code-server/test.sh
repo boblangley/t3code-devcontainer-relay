@@ -81,6 +81,18 @@ check "env file contains T3CODE_SECRETPATH" \
 check "env file contains T3CODE_INSTALL_DIR" \
     grep -q "T3CODE_INSTALL_DIR" /usr/local/etc/t3code-server.env
 
+check "env file contains T3CODE_BASEDIR" \
+    grep -q "T3CODE_BASEDIR" /usr/local/etc/t3code-server.env
+
+check "env file contains T3CODE_STATEPARENTDIR" \
+    grep -q "T3CODE_STATEPARENTDIR" /usr/local/etc/t3code-server.env
+
+check "env file contains T3CODE_WORKSPACEHOME" \
+    grep -q "T3CODE_WORKSPACEHOME" /usr/local/etc/t3code-server.env
+
+check "env file contains T3CODE_RUNASUSER" \
+    grep -q "T3CODE_RUNASUSER" /usr/local/etc/t3code-server.env
+
 # ---------------------------------------------------------------------------
 # 4. Install directory (populated only when the artifact was successfully
 #    downloaded; skipped here because no release exists in CI until

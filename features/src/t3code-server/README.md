@@ -31,6 +31,10 @@ dependency has been resolved, which should never happen in normal usage.
 | `version`    | string | `latest`                     | Artifact release tag to install. `latest` pulls the most recent published release. Pin to a specific tag (e.g. `t3code-server-v1.2.3`) for reproducibility. |
 | `port`       | string | `3773`                       | Port the server binds on (`0.0.0.0:<port>`). Caddy reaches the server on the `dev-ingress` network at this port. |
 | `secretPath` | string | `/run/t3code/relay-secret`   | Path **inside the container** where the shared relay-secret file is bind-mounted from the host. Must match the `target` of the `mounts` entry in your `devcontainer.json`. |
+| `baseDir` | string | empty | Explicit T3 server state directory (`T3CODE_HOME`). Takes precedence over `stateParentDir` and any existing `T3CODE_HOME`. |
+| `stateParentDir` | string | empty | Durable parent directory for T3 server state. When set, the feature uses `<stateParentDir>/<DEVCONTAINER_ID-or-HOSTNAME>` as `T3CODE_HOME`. |
+| `workspaceHome` | string | empty | Workspace cwd passed to the server. Leave empty to use the `WORKSPACE_HOME` container environment variable when present. |
+| `runAsUser` | string | `vscode` | Linux user that runs the T3 server process. Set to empty to run as the entrypoint user. |
 
 ## Usage
 
@@ -39,7 +43,13 @@ Minimal `devcontainer.json` (no options overrides needed for standard use):
 ```jsonc
 {
   "features": {
-    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {}
+    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+      "stateParentDir": "/mnt/t3code-state"
+    }
+  },
+  "containerEnv": {
+    "DEVCONTAINER_ID": "${devcontainerId}",
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}"
   },
   "runArgs": [
     "--network=dev-ingress",
@@ -48,7 +58,8 @@ Minimal `devcontainer.json` (no options overrides needed for standard use):
     "--name", "<myrepo>"
   ],
   "mounts": [
-    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly"
+    "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly",
+    "source=${localEnv:HOME}/.local/share/t3code-devcontainers,target=/mnt/t3code-state,type=bind"
   ]
 }
 ```
@@ -85,6 +96,64 @@ top-level `docker-compose.yml`).
 If you override `secretPath` in the feature options, update the mount `target`
 to match.
 
+### Persistent server state
+
+The server stores its environment identity, projects, threads, auth sessions,
+settings, logs, worktrees, and SQLite state under `T3CODE_HOME`. By default the
+server chooses `$HOME/.t3`, which is inside the container and may not survive a
+rebuild.
+
+For persistent state, bind-mount a common host directory and set
+`stateParentDir` to the mount target:
+
+```jsonc
+{
+  "features": {
+    "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+      "stateParentDir": "/mnt/t3code-state"
+    }
+  },
+  "containerEnv": {
+    "DEVCONTAINER_ID": "${devcontainerId}",
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}"
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.local/share/t3code-devcontainers,target=/mnt/t3code-state,type=bind"
+  ]
+}
+```
+
+At container startup the feature resolves:
+
+```text
+T3CODE_HOME=/mnt/t3code-state/<DEVCONTAINER_ID>
+```
+
+If `DEVCONTAINER_ID` is not set, the supervisor falls back to `HOSTNAME`, then
+`unknown`. This keeps distinct devcontainers from sharing one `state.sqlite`
+while still allowing one durable parent mount.
+
+Use `baseDir` only when you want to provide the full state directory yourself.
+If `baseDir` is set, it wins over `stateParentDir`.
+
+### Runtime user
+
+The devcontainer entrypoint may start as `root`, but the T3 server process
+does not need to stay root. By default the supervisor starts the server with:
+
+```text
+runAsUser=vscode
+```
+
+When the supervisor itself is running as root and `runAsUser` names an existing
+Linux user, it prepares the resolved `T3CODE_HOME` directory and then launches
+Node through `runuser`. If the user does not exist, the supervisor logs a
+warning and falls back to the entrypoint user.
+
+Override `runAsUser` if your image uses a different remote user. Set it to an
+empty string only when you intentionally want the server process to run as the
+entrypoint user.
+
 ## How it works
 
 `install.sh` runs during the container image build:
@@ -104,10 +173,14 @@ start:
 1. Sources `/usr/local/etc/t3code-server.env`.
 2. Checks a PID file at `/tmp/t3code-server.pid` — if the supervisor is already
    running (e.g. after a `docker restart` without a rebuild) it skips re-launch.
-3. Starts a restart-loop supervisor in a background subshell: runs the Node
-   server, logs to `/tmp/t3code-server.log`, backs off exponentially (1 → 2 → 4
-   … → 30 s cap) on repeated crashes.
-4. `exec "$@"` to hand off to the container's own command (or `sleep infinity`
+3. Resolves `T3CODE_HOME` from `baseDir`, `stateParentDir`, existing
+   `T3CODE_HOME`, or the upstream server default.
+4. Resolves the server cwd from `workspaceHome`, `WORKSPACE_HOME`, or the
+   upstream server default.
+5. Starts a restart-loop supervisor in a background subshell: runs the Node
+   server as `runAsUser` when possible, logs to `/tmp/t3code-server.log`, backs
+   off exponentially (1 → 2 → 4 … → 30 s cap) on repeated crashes.
+6. `exec "$@"` to hand off to the container's own command (or `sleep infinity`
    if none is provided), keeping the container alive.
 
 ### Server environment variables
@@ -119,6 +192,7 @@ must match what the forked server reads (defined in `vendor-t3code`'s
 | Variable | Purpose |
 |---|---|
 | `PORT` | TCP port (`0.0.0.0:PORT`) |
+| `T3CODE_HOME` | Base directory for server state when configured or inherited |
 | `T3CODE_RELAY_SECRET_FILE` | Filesystem path to the shared-secret file |
 
 Logs are appended to `/tmp/t3code-server.log` inside the container.
