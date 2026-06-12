@@ -159,6 +159,13 @@ func relayEnvironmentID(env Environment) string {
 	return env.ID
 }
 
+func relayEnvironmentLabel(env Environment) string {
+	if label := strings.TrimSpace(env.Name); label != "" {
+		return label
+	}
+	return env.ID
+}
+
 func (a *APIHandler) lookupEnvironmentByRelayID(id string) (Environment, bool) {
 	if env, ok := a.app.GetStore().GetByID(id); ok {
 		return env, true
@@ -188,27 +195,11 @@ func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Reque
 	}
 	records := make([]envRecord, 0, len(envs))
 	for _, e := range envs {
-		label := ""
-		// Prefer the probe-reported label, fall back to the container name,
-		// then the environment id, so label is never empty (contract requires
-		// a non-empty trimmed string).
-		if e.ProbeJSON != "" {
-			var pr probeResult
-			if err := json.Unmarshal([]byte(e.ProbeJSON), &pr); err == nil {
-				label = strings.TrimSpace(pr.Label)
-			}
-		}
-		if label == "" {
-			label = strings.TrimSpace(e.Name)
-		}
-		if label == "" {
-			label = e.ID
-		}
 		// linkedAt = first time we discovered the environment (RFC3339, non-empty).
 		linkedAt := time.Unix(e.FirstSeen, 0).UTC().Format(time.RFC3339)
 		records = append(records, envRecord{
 			EnvironmentID: relayEnvironmentID(e),
-			Label:         label,
+			Label:         relayEnvironmentLabel(e),
 			Endpoint:      environmentEndpoint(e),
 			LinkedAt:      linkedAt,
 		})
@@ -250,8 +241,9 @@ func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Requ
 	// probe body didn't parse.
 	var descriptor any
 	if rawBody != "" {
-		var d any
+		var d map[string]any
 		if err := json.Unmarshal([]byte(rawBody), &d); err == nil {
+			d["label"] = relayEnvironmentLabel(env)
 			descriptor = d
 		}
 	}

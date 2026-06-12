@@ -398,8 +398,8 @@ func TestAPIHandler_ListEnvironments_WithAuth(t *testing.T) {
 	if record["environmentId"] != "server-env-1" {
 		t.Errorf("expected descriptor environment id, got %v", record["environmentId"])
 	}
-	if record["label"] != "My Repo" {
-		t.Errorf("expected probe label, got %v", record["label"])
+	if record["label"] != "myrepo" {
+		t.Errorf("expected container name label, got %v", record["label"])
 	}
 }
 
@@ -463,6 +463,9 @@ func TestAPIHandler_StatusUsesDescriptorEnvironmentID(t *testing.T) {
 	}
 	if descriptor["environmentId"] != "server-env-1" {
 		t.Errorf("expected matching descriptor id, got %v", descriptor["environmentId"])
+	}
+	if descriptor["label"] != "myrepo" {
+		t.Errorf("expected container name descriptor label, got %v", descriptor["label"])
 	}
 }
 
