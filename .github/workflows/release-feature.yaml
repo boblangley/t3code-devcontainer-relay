@@ -123,5 +123,6 @@ jobs:
           #   ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:<version>
           oci-registry: "ghcr.io"
           namespace: "boblangley/t3code-devcontainer-relay"
+          disable-repo-tagging: "true"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
