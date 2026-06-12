@@ -95,6 +95,19 @@ func (s *Store) MarkStopped(containerID string) error {
 	return err
 }
 
+// DeleteByID removes an environment row by its internal store ID.
+func (s *Store) DeleteByID(id string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM environments WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rowsAffected > 0, nil
+}
+
 // List returns all environments ordered by last_seen desc.
 func (s *Store) List() []Environment {
 	rows, err := s.db.Query(`SELECT id, container_id, name, hostname, ip, port, status, COALESCE(probe_json,''), first_seen, last_seen FROM environments ORDER BY last_seen DESC`)
