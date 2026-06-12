@@ -3,9 +3,11 @@ package t3relay
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -309,10 +311,10 @@ func TestAPIHandler_ListEnvironments_WithAuth(t *testing.T) {
 
 	// seed an environment
 	env := Environment{
-		ID: "env1", ContainerID: "c1", Name: "myrepo",
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
 		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
 		Status:    "running",
-		ProbeJSON: `{"environmentId":"env1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27"}`,
+		ProbeJSON: `{"environmentId":"server-env-1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27"}`,
 		FirstSeen: 1000, LastSeen: 1000,
 	}
 	if err := store.Upsert(env); err != nil {
@@ -344,6 +346,114 @@ func TestAPIHandler_ListEnvironments_WithAuth(t *testing.T) {
 	}
 	if len(arr) != 1 {
 		t.Errorf("expected 1 environment, got %d", len(arr))
+	}
+	record, ok := arr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("environment record is not an object, got %T", arr[0])
+	}
+	if record["environmentId"] != "server-env-1" {
+		t.Errorf("expected descriptor environment id, got %v", record["environmentId"])
+	}
+	if record["label"] != "My Repo" {
+		t.Errorf("expected probe label, got %v", record["label"])
+	}
+}
+
+func TestAPIHandler_StatusUsesDescriptorEnvironmentID(t *testing.T) {
+	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	probe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/t3/environment" {
+			t.Errorf("unexpected probe path %q", r.URL.Path)
+		}
+		if r.Header.Get("X-Relay-Secret") != "test-secret" {
+			t.Errorf("missing relay secret header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"environmentId":"server-env-1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27","capabilities":{"repositoryIdentity":true}}`))
+	}))
+	defer probe.Close()
+
+	host, portString, err := net.SplitHostPort(probe.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split probe address: %v", err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatalf("parse probe port: %v", err)
+	}
+
+	env := Environment{
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: host, Port: port,
+		Status:    "running",
+		ProbeJSON: `{"environmentId":"server-env-1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27"}`,
+		FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/environments/server-env-1/status", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["environmentId"] != "server-env-1" {
+		t.Errorf("expected descriptor environment id, got %v", resp["environmentId"])
+	}
+	descriptor, ok := resp["descriptor"].(map[string]any)
+	if !ok {
+		t.Fatalf("descriptor is not an object, got %T", resp["descriptor"])
+	}
+	if descriptor["environmentId"] != "server-env-1" {
+		t.Errorf("expected matching descriptor id, got %v", descriptor["environmentId"])
+	}
+}
+
+func TestAPIHandler_ConnectUsesDescriptorEnvironmentID(t *testing.T) {
+	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	env := Environment{
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status:    "running",
+		ProbeJSON: `{"environmentId":"server-env-1","label":"My Repo","platform":{"os":"linux","arch":"x64"},"serverVersion":"0.0.27"}`,
+		FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/environments/server-env-1/connect", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["environmentId"] != "server-env-1" {
+		t.Errorf("expected descriptor environment id, got %v", resp["environmentId"])
 	}
 }
 

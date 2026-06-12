@@ -126,6 +126,39 @@ func environmentEndpoint(env Environment) map[string]string {
 	}
 }
 
+func environmentDescriptorID(env Environment) string {
+	if env.ProbeJSON == "" {
+		return ""
+	}
+	var pr probeResult
+	if err := json.Unmarshal([]byte(env.ProbeJSON), &pr); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(pr.EnvironmentID)
+}
+
+// relayEnvironmentID returns the id the relay exposes to clients. The store
+// keeps the devcontainer id as its stable row key, but clients validate status
+// and connect responses against the T3 server's descriptor id.
+func relayEnvironmentID(env Environment) string {
+	if id := environmentDescriptorID(env); id != "" {
+		return id
+	}
+	return env.ID
+}
+
+func (a *APIHandler) lookupEnvironmentByRelayID(id string) (Environment, bool) {
+	if env, ok := a.app.GetStore().GetByID(id); ok {
+		return env, true
+	}
+	for _, env := range a.app.ListEnvironments() {
+		if relayEnvironmentID(env) == id {
+			return env, true
+		}
+	}
+	return Environment{}, false
+}
+
 func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Request) error {
 	envs := a.app.ListEnvironments()
 	// Shape MUST match contracts RelayClientEnvironmentRecord exactly
@@ -162,7 +195,7 @@ func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Reque
 		// linkedAt = first time we discovered the environment (RFC3339, non-empty).
 		linkedAt := time.Unix(e.FirstSeen, 0).UTC().Format(time.RFC3339)
 		records = append(records, envRecord{
-			EnvironmentID: e.ID,
+			EnvironmentID: relayEnvironmentID(e),
 			Label:         label,
 			Endpoint:      environmentEndpoint(e),
 			LinkedAt:      linkedAt,
@@ -172,7 +205,7 @@ func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Request, envID string) error {
-	env, ok := a.app.GetStore().GetByID(envID)
+	env, ok := a.lookupEnvironmentByRelayID(envID)
 	if !ok {
 		return writeJSON(w, http.StatusNotFound, map[string]string{
 			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
@@ -212,8 +245,9 @@ func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Requ
 	}
 	_ = pr // parsed form retained by probeEnvironment; raw body used for the wire
 
+	responseEnvironmentID := relayEnvironmentID(env)
 	resp := map[string]any{
-		"environmentId": env.ID,
+		"environmentId": responseEnvironmentID,
 		"endpoint":      environmentEndpoint(env),
 		"status":        status,
 		"checkedAt":     time.Now().UTC().Format(time.RFC3339),
@@ -240,7 +274,7 @@ func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Req
 		_, _ = io.ReadAll(io.LimitReader(r.Body, 4096))
 	}
 
-	env, ok := a.app.GetStore().GetByID(envID)
+	env, ok := a.lookupEnvironmentByRelayID(envID)
 	if !ok {
 		return writeJSON(w, http.StatusNotFound, map[string]string{
 			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
@@ -251,7 +285,7 @@ func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Req
 	expiresAt := time.Now().UTC().Add(2 * time.Minute).Format(time.RFC3339)
 
 	return writeJSON(w, http.StatusOK, map[string]any{
-		"environmentId": env.ID,
+		"environmentId": relayEnvironmentID(env),
 		"endpoint":      environmentEndpoint(env),
 		"credential":    credential,
 		"expiresAt":     expiresAt,
