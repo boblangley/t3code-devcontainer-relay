@@ -54,3 +54,13 @@ Relay infrastructure artifacts keep their own component version clocks:
 - `feature-t3code-server-<version>` for the devcontainer feature
 
 Avoid naked repo-wide `v*` tags for new releases. They do not identify which component is being released.
+
+## Feature Version Alignment
+
+The devcontainer feature keeps its version in `features/src/t3code-server/devcontainer-feature.json`, as required by the devcontainer feature packaging format. Releases are still tag-driven:
+
+1. Push `feature-t3code-server-<version>`.
+2. If the JSON version already matches `<version>`, the workflow publishes the feature.
+3. If the JSON version does not match, the workflow commits the JSON version bump to `main`, moves the tag to that commit, pushes both, verifies the workspace is aligned, and publishes.
+
+This makes the tag the operator-facing release command while keeping the devcontainer manifest as the package-format source of truth. The workflow publishes in the same run after alignment because pushes made with the default GitHub Actions token do not reliably trigger follow-up workflow runs.

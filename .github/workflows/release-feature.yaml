@@ -4,8 +4,14 @@
 # Adapted from devcontainers/feature-starter's publish workflow.
 #
 # Triggers:
-#   - push to main when any file under features/** changes
-#   - workflow_dispatch (manual run)
+#   - push of component version tags matching feature-t3code-server-*.
+#   - workflow_dispatch publishes the version already in devcontainer-feature.json.
+#
+# Tag-driven version alignment:
+#   - If feature-t3code-server-<version> does not match devcontainer-feature.json,
+#     this workflow updates the JSON on main, moves the tag to that commit, pushes
+#     main + the moved tag, and publishes from the aligned workspace.
+#   - The workflow publishes only after tag version == JSON version.
 #
 # Publishes to: ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server
 
@@ -13,10 +19,8 @@ name: Release – Devcontainer Feature
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "features/**"
+    tags:
+      - "feature-t3code-server-*"
   workflow_dispatch:
 
 permissions:
@@ -29,6 +33,85 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve feature version
+        id: feature
+        run: |
+          JSON_PATH="features/src/t3code-server/devcontainer-feature.json"
+          JSON_VERSION="$(node -e "const fs=require('fs'); console.log(JSON.parse(fs.readFileSync(process.argv[1], 'utf8')).version)" "$JSON_PATH")"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            case "$TAG" in
+              feature-t3code-server-*) TAG_VERSION="${TAG#feature-t3code-server-}" ;;
+              *) echo "Unexpected tag: $TAG" >&2; exit 1 ;;
+            esac
+          else
+            TAG=""
+            TAG_VERSION="$JSON_VERSION"
+          fi
+
+          if [[ ! "$TAG_VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid feature version: $TAG_VERSION" >&2
+            exit 1
+          fi
+
+          needs_bump="false"
+          if [[ -n "$TAG" && "$TAG_VERSION" != "$JSON_VERSION" ]]; then
+            needs_bump="true"
+          fi
+
+          echo "json_path=$JSON_PATH" >> "$GITHUB_OUTPUT"
+          echo "json_version=$JSON_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "needs_bump=$needs_bump" >> "$GITHUB_OUTPUT"
+
+      - name: Align feature manifest version
+        if: steps.feature.outputs.needs_bump == 'true'
+        env:
+          FEATURE_VERSION: ${{ steps.feature.outputs.version }}
+          FEATURE_TAG: ${{ steps.feature.outputs.tag }}
+          JSON_PATH: ${{ steps.feature.outputs.json_path }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin main
+          git checkout -B main origin/main
+
+          CURRENT_VERSION="$(node -e "const fs=require('fs'); console.log(JSON.parse(fs.readFileSync(process.argv[1], 'utf8')).version)" "$JSON_PATH")"
+          if [[ "$CURRENT_VERSION" != "$FEATURE_VERSION" ]]; then
+            node -e "
+              const fs = require('fs');
+              const path = process.argv[1];
+              const version = process.argv[2];
+              const json = JSON.parse(fs.readFileSync(path, 'utf8'));
+              json.version = version;
+              fs.writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
+            " "$JSON_PATH" "$FEATURE_VERSION"
+            git add "$JSON_PATH"
+            git commit -m "chore(t3code-server): bump feature version to ${FEATURE_VERSION}"
+            git push origin main
+          fi
+
+          git tag -f "$FEATURE_TAG" HEAD
+          git push --force origin "refs/tags/${FEATURE_TAG}"
+
+          echo "Moved ${FEATURE_TAG} to a main commit with devcontainer-feature.json version ${FEATURE_VERSION}."
+
+      - name: Verify feature manifest version
+        env:
+          FEATURE_VERSION: ${{ steps.feature.outputs.version }}
+          JSON_PATH: ${{ steps.feature.outputs.json_path }}
+        run: |
+          CURRENT_VERSION="$(node -e "const fs=require('fs'); console.log(JSON.parse(fs.readFileSync(process.argv[1], 'utf8')).version)" "$JSON_PATH")"
+          if [[ "$CURRENT_VERSION" != "$FEATURE_VERSION" ]]; then
+            echo "Feature manifest version ${CURRENT_VERSION} does not match requested version ${FEATURE_VERSION}." >&2
+            exit 1
+          fi
 
       - name: Publish devcontainer feature
         uses: devcontainers/action@v1

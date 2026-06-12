@@ -4,8 +4,8 @@
 #          cloudflare DNS + t3code-relay module) to GHCR as a multi-arch image.
 #
 # Triggers:
-#   - push of version tags matching v* (e.g. v0.1.0)
-#   - workflow_dispatch (manual run)
+#   - push of component version tags matching relay-caddy-* (e.g. relay-caddy-0.1.7)
+#   - workflow_dispatch with an explicit version
 #
 # Pushes to: ghcr.io/boblangley/t3code-relay-caddy
 #
@@ -17,8 +17,13 @@ name: Release – Caddy Image
 on:
   push:
     tags:
-      - "v*"
+      - "relay-caddy-*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Caddy image version to publish, without the relay-caddy- prefix."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +35,26 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: release
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            case "$TAG" in
+              relay-caddy-*) VERSION="${TAG#relay-caddy-}" ;;
+              *) echo "Unexpected tag: $TAG" >&2; exit 1 ;;
+            esac
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (for cross-arch emulation)
         uses: docker/setup-qemu-action@v3
@@ -50,17 +75,11 @@ jobs:
         with:
           images: ghcr.io/boblangley/t3code-relay-caddy
           tags: |
-            # Tag `latest` on every tag push.
-            # NOTE: enable={{is_default_branch}} is intentionally NOT used here
-            # because this workflow is tag-triggered; the runner HEAD is detached
-            # at the tag, so is_default_branch would always be false.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            # Semver tags from the git tag (e.g. v0.1.0 → 0.1.0, 0.1, 0)
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # Also tag the full git tag string as-is (e.g. v0.1.0)
-            type=ref,event=tag
+            type=raw,value=latest
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=relay-caddy-${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
