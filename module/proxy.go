@@ -71,11 +71,11 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 		return nil
 	}
 
-	// 1. Validate bearer token
-	token := extractBearer(r.Header.Get("Authorization"))
-	if !p.app.ValidateBearer(token) {
-		return writeJSONError(w, http.StatusUnauthorized, "auth_invalid", "invalid_bearer")
-	}
+	// 1. Detect relay-admin traffic. Browser/application traffic uses
+	// environment-issued credentials and must pass through transparently. When
+	// the caller presents the relay bearer, translate it to the internal
+	// X-Relay-Secret trusted by the environment server.
+	relayAuthorized := p.app.ValidateBearer(extractBearer(r.Header.Get("Authorization")))
 
 	// 2. Resolve host → environment
 	host := r.Host
@@ -100,9 +100,8 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
-			// remove client auth, inject relay secret
-			req.Header.Del("Authorization")
-			if len(secret) > 0 {
+			if relayAuthorized && len(secret) > 0 {
+				req.Header.Del("Authorization")
 				req.Header.Set("X-Relay-Secret", string(secret))
 			}
 		},
