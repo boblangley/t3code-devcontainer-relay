@@ -7,19 +7,12 @@
 # Source of truth for the vendored T3Code fork revision consumed by this relay
 # distribution repository.
 #
-# The current fork tag predates the intended release convention, so this first
-# manifest uses a legacy downstream release version. Future fork releases should
-# use forkTag/releaseVersion pairs like:
-#
-#   forkTag: t3code-0.0.28-wyrd.1
-#   releaseVersion: 0.0.28-wyrd.1
-
 upstreamRepository: pingdotgg/t3code
 upstreamVersion: 0.0.27
 forkRepository: boblangley/t3code
 forkBranch: bearer-auth
-forkTag: desktop-v0.27.1
-forkCommit: 1e87640387b3630964a2c5771aeee5f1f92ae5cf
-releaseVersion: 0.0.27-legacy.1
-releaseMilestone: t3code-0.0.27-legacy.1
+forkTag: t3code-0.0.27-wyrd.1
+forkCommit: 34ea8c65a2e768ec9787b278b49c81869057a7e2
+releaseVersion: 0.0.27-wyrd.1
+releaseMilestone: t3code-0.0.27-wyrd.1
 intendedForkTagFormat: t3code-<upstreamVersion>-wyrd.<revision>

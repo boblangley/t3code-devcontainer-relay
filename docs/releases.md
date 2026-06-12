@@ -15,9 +15,9 @@ The fork repository owns upstream synchronization work:
 
 - detect an upstream stable T3Code release
 - create a fork milestone named for the fork release, for example `t3code-0.0.28-wyrd.1`
-- sync fork `main` with upstream `main`
-- rebase the fork branch, currently `bearer-auth`
-- merge the fork PR
+- sync the fork default branch, currently `bearer-auth`, with upstream `main`
+- rebase the fork patch stack when needed
+- merge the fork PR into the default branch
 - tag the fork release
 
 After the fork release tag exists, the fork automation should open a PR here that only:
@@ -38,7 +38,7 @@ releaseVersion: <upstreamVersion>-wyrd.<revision>
 milestone:      t3code-<upstreamVersion>-wyrd.<revision>
 ```
 
-The initial manifest may reference legacy fork tags while still using a downstream `releaseVersion` that starts with the upstream package version.
+Legacy fork tags may exist, but new releases should use the intended convention.
 
 ## Downstream Artifacts
 
