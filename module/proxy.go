@@ -58,6 +58,19 @@ func (p *ProxyHandler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error { return
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// CORS — mirror the relay API (corsHeaders). Browsers reach
+	// <repo>.t3.<domain> directly from the web app origin, so every response
+	// needs these headers. Critically, a CORS preflight (OPTIONS) carries no
+	// Authorization header, so it must be answered BEFORE the bearer check
+	// below — otherwise it 401s with no CORS headers and the browser blocks the
+	// real request. Set up-front, these survive the reverse-proxy header copy
+	// and the error handler.
+	corsHeaders(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
 	// 1. Validate bearer token
 	token := extractBearer(r.Header.Get("Authorization"))
 	if !p.app.ValidateBearer(token) {
