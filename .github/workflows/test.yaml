@@ -68,8 +68,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # Must satisfy the module's go.mod `go 1.25.0` directive.
-          go-version: "1.25"
+          # Must satisfy the module's go.mod `go 1.26.4` directive.
+          go-version: "1.26.4"
           # Cache go module downloads and build cache keyed on go.sum
           cache: true
           cache-dependency-path: module/go.sum
