@@ -82,9 +82,12 @@ jobs:
 
           for tag in "${tags[@]}"; do
             ref="tags/${tag}"
-            existing_sha="$(
-              gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" --jq '.object.sha' 2>/dev/null || true
-            )"
+            existing_sha=""
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" >/dev/null 2>&1; then
+              existing_sha="$(
+                gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" --jq '.object.sha'
+              )"
+            fi
 
             if [[ -n "$existing_sha" ]]; then
               if [[ "$existing_sha" == "$TARGET_SHA" ]]; then
