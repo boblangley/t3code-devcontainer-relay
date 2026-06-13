@@ -9,9 +9,16 @@ relationships:
 
 This repository is the release control plane for the self-hosted relay distribution. The T3Code application code comes from the `vendor-t3code` fork submodule; relay infrastructure code lives in this repository.
 
-## Fork Handoff
+## Fork workflows
 
-The fork repository owns upstream synchronization work:
+The fork has two different workflows. Keep them separate.
+
+### Fork maintenance
+
+Use this when upstream `t3dotgg/t3-code` shipped a new stable release and the
+fork needs to be synced or rebased.
+
+The fork repository owns this upstream-synchronization work:
 
 - detect an upstream stable T3Code release
 - create a fork milestone named for the fork release, for example `t3code-0.0.28-boblangley.1`
@@ -19,6 +26,35 @@ The fork repository owns upstream synchronization work:
 - rebase the fork patch stack when needed
 - merge the fork PR into the default branch
 - tag the fork release
+
+### Fork revision
+
+Use this when upstream did not change, but the fork itself needs another
+release revision on top of the currently active fork tag.
+
+For example, if the currently consumed tag is
+`t3code-0.0.28-boblangley.1`, the next fork-only revision should be
+`t3code-0.0.28-boblangley.2`.
+
+The fork repository owns this fork-revision work:
+
+- read the current active fork tag from `vendor/t3code.yml`
+- increment only the fork revision suffix
+- create a dedicated submodule branch or worktree in `vendor-t3code` from the commit referenced by the current active fork tag
+- implement and validate the fork changes in that submodule branch or worktree
+- push the branch to the fork repository
+- create the matching fork milestone, for example `t3code-0.0.28-boblangley.2`
+- open a fork PR targeting `bearer-auth`
+- merge the fork PR into the default branch
+- tag the new fork release
+- clean up the local submodule branch or worktree once the fork change is landed
+
+When using this repo's workspace to author fork changes inside the
+`vendor-t3code` submodule, resetting the submodule checkout to the current
+active fork tag is a local convenience step only. The authoritative release
+workflow still happens in the fork repository.
+
+## Fork handoff to this repo
 
 After the fork release tag exists, the fork automation should open a PR here that only:
 

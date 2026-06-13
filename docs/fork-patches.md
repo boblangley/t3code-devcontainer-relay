@@ -11,6 +11,10 @@ patched SHA after these land).
 > against upstream stay cheap (SPEC §5.4). File:line references are against the
 > upstream commit the branch currently points at; verify they still apply.
 
+> Release note: if upstream has not changed and you are making a fork-only fix,
+> treat the work as a new fork revision from the current active fork tag rather
+> than a new upstream-sync cycle. See [docs/releases.md](./releases.md).
+
 The authoritative wire contract both sides implement is
 [`module/API.md` → "Self-Hosted Implementation Scope"](../module/API.md).
 
@@ -85,8 +89,14 @@ unsigned first-run steps.
 
 ## 4. After patching
 
-1. Push the patches to `bearer-auth`.
-2. In this repo: `git -C vendor-t3code fetch && git -C vendor-t3code checkout <patched-sha>`,
+1. If this is an upstream-sync change, follow the fork maintenance workflow in
+   [docs/releases.md](./releases.md).
+2. If this is a fork-only fix, create a dedicated branch or worktree in the
+   `vendor-t3code` submodule from the current active fork tag, make the change,
+   push the branch, open a PR to `bearer-auth`, merge it, tag the next fork
+   revision, and clean up the local worktree.
+3. After the new fork tag exists, in this repo:
+   `git -C vendor-t3code fetch && git -C vendor-t3code checkout <tagged-sha>`,
    then commit the submodule bump.
-3. Run `build-t3code-artifacts.yaml` to publish the server tarballs the feature
+4. Run `build-t3code-artifacts.yaml` to publish the server tarballs the feature
    installs.
