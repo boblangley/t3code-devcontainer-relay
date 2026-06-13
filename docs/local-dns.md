@@ -277,7 +277,7 @@ loopback `127.0.0.1` is correct.
 
 **`dig` works but the browser still cannot reach `relay.t3.example.com`**
 
-- The relay may not be running. Check: `docker compose ps` — all three services should show
+- The relay may not be running. Check: `docker compose ps` — `caddy` and `web` should show
   `running`.
 - The TLS certificate may not have issued yet. See
   [cloudflare.md — Verify the certificate issues](cloudflare.md#step-3--verify-the-certificate-issues).

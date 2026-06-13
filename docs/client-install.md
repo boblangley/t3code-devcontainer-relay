@@ -111,7 +111,7 @@ devcontainers. If the list is empty, your devcontainers may not be running yet �
 
 If the app shows an error, check:
 
-- The relay is running: `docker compose ps` — all three services should be `Up`.
+- The relay is running: `docker compose ps` — `caddy` and `web` should be `Up`.
 - The relay URL is reachable from this machine: `curl -s https://relay.t3.example.com/health`
   should return `{"ok":true,"service":"relay"}`.
 - Local DNS is configured: see [local-dns.md](local-dns.md). If you are connecting over

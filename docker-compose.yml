@@ -1,13 +1,11 @@
 # t3code-devcontainer-relay — compose stack (§5.5 of SPEC.md)
 #
-# Three services:
+# Two services:
 #   caddy     — custom build (caddy-docker-proxy + cloudflare DNS + t3code-relay
-#               module). Terminates TLS for *.t3.${T3_DOMAIN}, routes to
-#               devcontainers and to the relay/web surfaces. Publishes 80/443 on
-#               the host (local access via dnsmasq).
-#   tailscale — sidecar node that forwards tailnet TCP 443 to caddy:443, so
-#               tailnet peers reach devcontainers without the host joining the
-#               tailnet. The local machine is NOT on the tailnet.
+#               module). Terminates TLS for wildcard `*.t3.*` hostnames declared
+#               on its own labels, routes to devcontainers and to the relay/web
+#               surfaces, embeds a tsnet node, and answers tailnet DNS on :53.
+#               Publishes 80/443 on the host; local DNS still uses host-level dnsmasq.
 #   web       — the forked t3code web app, routed by caddy-docker-proxy labels
 #               (no module involvement).
 #
@@ -33,27 +31,16 @@ services:
       # bind-mounted into every devcontainer (see add-a-devcontainer.md).
       - ${RELAY_SECRET_FILE}:/run/secrets/t3relay-secret:ro
     networks:
-      - dev-ingress   # reach devcontainers + web
-      - ts-ingress    # receive forwarded traffic from tailscale
-
-  tailscale:
-    image: tailscale/tailscale:latest
-    restart: unless-stopped
-    hostname: t3code-relay        # MagicDNS name of this node in the tailnet
-    environment:
-      TS_AUTHKEY: ${TS_AUTHKEY}
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_USERSPACE: "true"        # no NET_ADMIN / /dev/net/tun required
-      TS_SERVE_CONFIG: /config/serve.json
-    volumes:
-      - tailscale-state:/var/lib/tailscale
-    configs:
-      # Tailscale config is supplied inline via the top-level configs: section
-      # (no bind mounts), per §5.5.
-      - source: ts_serve
-        target: /config/serve.json
-    networks:
-      - ts-ingress    # only reaches caddy; never touches dev-ingress directly
+      - dev-ingress
+    labels:
+      # Exact relay hostname. Add more caddy_<n> / caddy_<n>.route blocks for
+      # additional domains as needed.
+      caddy_0: "relay.t3.${T3_DOMAIN}"
+      caddy_0.route.t3code_relay_api: ""
+      # Wildcard devcontainer hostnames. These wildcard labels are also the
+      # relay's source of truth for the tailnet DNS zones it should answer.
+      caddy_1: "*.t3.${T3_DOMAIN}"
+      caddy_1.route.t3code_relay_proxy: ""
 
   web:
     image: ghcr.io/boblangley/t3code-relay-web:latest
@@ -70,27 +57,12 @@ services:
       caddy: web.t3.${T3_DOMAIN}
       caddy.reverse_proxy: "{{upstreams 80}}"
 
-# Inline Tailscale serve config: forward raw TCP 443 to caddy:443 so caddy (not
-# tailscale) terminates TLS with the real *.t3.${T3_DOMAIN} wildcard cert.
-configs:
-  ts_serve:
-    content: |
-      {
-        "TCP": {
-          "443": { "TCPForward": "caddy:443" }
-        }
-      }
-
 networks:
   # Created once by the operator and shared with devcontainers. External so the
   # same network spans this compose project and every devcontainer.
   dev-ingress:
     external: true
-  # Internal to this compose project: only caddy + tailscale are on it.
-  ts-ingress:
-    internal: true
 
 volumes:
   caddy-data:
   relay-db:
-  tailscale-state:

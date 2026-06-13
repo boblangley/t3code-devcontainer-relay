@@ -99,6 +99,7 @@ T3_DOMAIN=example.com
 RELAY_TOKENS=<paste one or more tokens here, comma-separated>
 RELAY_SECRET_FILE=~/.config/t3relay/secret
 TS_AUTHKEY=<leave blank for now — filled in Stage 6>
+TAILSCALE_HOSTNAME=t3code-relay
 ```
 
 **Never commit `.env`.** It is listed in `.gitignore`. The secrets in it are yours alone.
@@ -126,9 +127,9 @@ Now start the compose stack:
 docker compose up -d
 ```
 
-This pulls the images (the first run takes a few minutes) and starts three services: `caddy`
-(the TLS proxy and relay), `tailscale` (the sidecar for remote access), and `web` (the browser
-client).
+This pulls the images (the first run takes a few minutes) and starts two services: `caddy`
+(the TLS proxy, relay, embedded tailnet node, and tailnet DNS server) and `web`
+(the browser client).
 
 Check that all three are running:
 
@@ -152,9 +153,8 @@ This takes up to 2 minutes on first start. If you see errors, see
 ## Stage 6 — Tailscale: join the tailnet and configure split DNS
 
 A tailnet is your own private network overlay across your devices — traffic between tailnet members
-is encrypted end-to-end, even over the public internet. The relay runs a Tailscale sidecar
-container that joins your tailnet so that your phone or laptop on the road can reach your
-devcontainers.
+is encrypted end-to-end, even over the public internet. The relay embeds a Tailscale node inside
+the `caddy` container so that your phone or laptop on the road can reach your devcontainers.
 
 Full details: [tailscale.md](tailscale.md)
 
@@ -164,9 +164,10 @@ Full details: [tailscale.md](tailscale.md)
 2. Go to **Settings** → **Keys** → **Generate auth key**.
    Check **Reusable** and **Ephemeral** → **Generate key**. Copy the key.
 3. Paste it into `.env` as `TS_AUTHKEY=tskey-auth-...`.
-4. Restart the stack: `docker compose up -d`.
-5. In the admin console → **Machines**, confirm `t3code-relay` appears.
-6. Configure split DNS: **DNS** → **Add nameserver** → custom, enter the tailnet IP of
+4. Optionally set `TAILSCALE_HOSTNAME=` in `.env` if you want a different machine name.
+5. Restart the stack: `docker compose up -d`.
+6. In the admin console → **Machines**, confirm `t3code-relay` appears.
+7. Configure split DNS: **DNS** → **Add nameserver** → custom, enter the tailnet IP of
    `t3code-relay`, restrict to domain `t3.example.com`.
 
 Verification: install Tailscale on a phone or second laptop, connect to your tailnet, and open

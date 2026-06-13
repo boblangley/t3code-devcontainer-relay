@@ -14,7 +14,11 @@ import (
 // before the bearer check — with a 2xx status and CORS headers — or the browser
 // blocks the real request.
 func TestProxyHandler_CORSPreflightBeforeAuth(t *testing.T) {
-	p := &ProxyHandler{app: &RelayApp{tokenList: []string{"tok1"}}}
+	p := &ProxyHandler{app: &RelayApp{
+		tokenList:      []string{"tok1"},
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
+	}}
 
 	req := httptest.NewRequest(http.MethodOptions, "https://repo.t3.example.com/.well-known/t3/environment", nil)
 	req.Header.Set("Origin", "https://web.t3.example.com")
@@ -138,9 +142,11 @@ func TestProxyHandler_PublicDescriptorPassesThroughWithoutRelaySecret(t *testing
 	}
 
 	p := &ProxyHandler{app: &RelayApp{
-		tokenList:    []string{"tok1"},
-		store:        store,
-		sharedSecret: []byte("test-secret"),
+		tokenList:      []string{"tok1"},
+		store:          store,
+		sharedSecret:   []byte("test-secret"),
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
 	}}
 
 	req := httptest.NewRequest(http.MethodGet, "https://repo.t3.example.com/.well-known/t3/environment", nil)
@@ -246,9 +252,11 @@ func testProxyHandlerForTarget(t *testing.T, target *httptest.Server) (*ProxyHan
 	}
 
 	p := &ProxyHandler{app: &RelayApp{
-		tokenList:    []string{"tok1"},
-		store:        store,
-		sharedSecret: []byte("test-secret"),
+		tokenList:      []string{"tok1"},
+		store:          store,
+		sharedSecret:   []byte("test-secret"),
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
 	}}
 
 	return p, func() {
@@ -273,9 +281,11 @@ func testProxyHandlerWithEmptyStore(t *testing.T) (*ProxyHandler, func()) {
 	}
 
 	p := &ProxyHandler{app: &RelayApp{
-		tokenList:    []string{"tok1"},
-		store:        store,
-		sharedSecret: []byte("test-secret"),
+		tokenList:      []string{"tok1"},
+		store:          store,
+		sharedSecret:   []byte("test-secret"),
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
 	}}
 
 	return p, func() {

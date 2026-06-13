@@ -137,6 +137,17 @@ func (s *Store) GetByHost(hostname string) (Environment, bool) {
 	return e, true
 }
 
+// GetByName returns an environment by its canonical published name.
+func (s *Store) GetByName(name string) (Environment, bool) {
+	var e Environment
+	err := s.db.QueryRow(`SELECT id, container_id, name, hostname, ip, port, status, COALESCE(probe_json,''), first_seen, last_seen FROM environments WHERE name = ?`, name).
+		Scan(&e.ID, &e.ContainerID, &e.Name, &e.Hostname, &e.IP, &e.Port, &e.Status, &e.ProbeJSON, &e.FirstSeen, &e.LastSeen)
+	if err != nil {
+		return Environment{}, false
+	}
+	return e, true
+}
+
 // GetByID returns an environment by its devcontainer ID.
 func (s *Store) GetByID(id string) (Environment, bool) {
 	var e Environment

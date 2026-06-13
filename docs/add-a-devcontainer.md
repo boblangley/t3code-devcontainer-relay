@@ -23,7 +23,7 @@ project's `devcontainer.json`.
 
 ## Prerequisites
 
-- The relay stack is running (`docker compose ps` shows all three services `Up`).
+- The relay stack is running (`docker compose ps` shows `caddy` and `web` `Up`).
 - You have already created the `dev-ingress` network and the shared-secret file as described in
   [setup-guide.md](setup-guide.md) Stages 3 and 5. If not, run:
 

@@ -128,7 +128,7 @@ Check that the token value in `.env` is correct and has no trailing spaces or ne
 grep CF_API_TOKEN .env
 ```
 
-**"Network ts-ingress not found" or compose error on start**
+**Compose network error on start**
 
 This is a compose networking issue, not a Cloudflare issue. Make sure you ran
 `docker network create dev-ingress` before `docker compose up -d`.

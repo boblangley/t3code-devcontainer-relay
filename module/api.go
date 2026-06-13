@@ -130,10 +130,14 @@ func envIDFromEnvironmentPath(path string) string {
 }
 
 // environmentEndpoint builds the endpoint object for an environment.
-func environmentEndpoint(env Environment) map[string]string {
+func environmentEndpoint(app *RelayApp, env Environment) map[string]string {
+	host := app.PublishedHostname(env.Name)
+	if host == "" {
+		host = env.Hostname
+	}
 	return map[string]string{
-		"httpBaseUrl":  "https://" + env.Hostname,
-		"wsBaseUrl":    "wss://" + env.Hostname,
+		"httpBaseUrl":  "https://" + host,
+		"wsBaseUrl":    "wss://" + host,
 		"providerKind": "t3_relay",
 	}
 }
@@ -200,7 +204,7 @@ func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Reque
 		records = append(records, envRecord{
 			EnvironmentID: relayEnvironmentID(e),
 			Label:         relayEnvironmentLabel(e),
-			Endpoint:      environmentEndpoint(e),
+			Endpoint:      environmentEndpoint(a.app, e),
 			LinkedAt:      linkedAt,
 		})
 	}
@@ -252,7 +256,7 @@ func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Requ
 	responseEnvironmentID := relayEnvironmentID(env)
 	resp := map[string]any{
 		"environmentId": responseEnvironmentID,
-		"endpoint":      environmentEndpoint(env),
+		"endpoint":      environmentEndpoint(a.app, env),
 		"status":        status,
 		"checkedAt":     time.Now().UTC().Format(time.RFC3339),
 	}
@@ -371,7 +375,7 @@ func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Req
 
 	return writeJSON(w, http.StatusOK, map[string]any{
 		"environmentId": relayEnvironmentID(env),
-		"endpoint":      environmentEndpoint(env),
+		"endpoint":      environmentEndpoint(a.app, env),
 		"credential":    credential.Credential,
 		"expiresAt":     credential.ExpiresAt,
 	})

@@ -219,6 +219,39 @@ func TestSanitizeName_Specific(t *testing.T) {
 	}
 }
 
+func TestWildcardZonesFromLabels(t *testing.T) {
+	labels := map[string]string{
+		"caddy_0":                "relay.t3.example.com",
+		"caddy_1":                "*.t3.example.com",
+		"caddy_1.tls.email":      "ops@example.com",
+		"caddy_2":                "*.t3.example.net, relay.t3.example.net",
+		"caddy_3":                "web.t3.example.org",
+		"caddy_4":                "*.not-t3.example.com",
+		"something_else":         "*.t3.ignored.example",
+		"caddy_10.reverse_proxy": "{{upstreams 80}}",
+	}
+
+	got := wildcardZonesFromLabels(labels)
+	want := []string{"t3.example.com", "t3.example.net"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("wildcardZonesFromLabels = %v, want %v", got, want)
+	}
+}
+
+func TestParseServedHost(t *testing.T) {
+	name, zone, ok := parseServedHost("repo.t3.example.net", []string{"t3.example.com", "t3.example.net"})
+	if !ok {
+		t.Fatal("expected host to parse")
+	}
+	if name != "repo" || zone != "t3.example.net" {
+		t.Fatalf("parseServedHost = (%q, %q, %v), want (%q, %q, true)", name, zone, ok, "repo", "t3.example.net")
+	}
+
+	if _, _, ok := parseServedHost("repo.deep.t3.example.net", []string{"t3.example.net"}); ok {
+		t.Fatal("expected multi-label left hand side to be rejected")
+	}
+}
+
 // --- Collision policy test ---
 
 func TestCollisionPolicy(t *testing.T) {
@@ -296,11 +329,13 @@ func testAPIHandler(t *testing.T, tokens []string) (*APIHandler, *Store, func())
 	}
 
 	app := &RelayApp{
-		DomainSuffix: "t3.example.com",
-		ProbePort:    3773,
-		tokenList:    tokens,
-		store:        store,
-		sharedSecret: []byte("test-secret"),
+		DomainSuffix:   "t3.example.com",
+		ProbePort:      3773,
+		tokenList:      tokens,
+		store:          store,
+		sharedSecret:   []byte("test-secret"),
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
 	}
 
 	ah := &APIHandler{app: app}

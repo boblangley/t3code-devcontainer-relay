@@ -142,7 +142,7 @@ func reconcile(ctx context.Context, app *RelayApp) {
 			hostnameOwner[baseName] = c.ID
 		}
 
-		fullHostname := hostName + "." + app.DomainSuffix
+		fullHostname := app.PublishedHostname(hostName)
 
 		// find IP: prefer network containing "dev-ingress"
 		ip := resolveContainerIP(app.docker, ctx, c.ID, logger)

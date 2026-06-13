@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -23,9 +24,12 @@ func init() {
 // RelayApp is the Caddy app that manages Docker discovery, SQLite store,
 // and exposes accessor methods to the two HTTP handler modules.
 type RelayApp struct {
-	// DomainSuffix is the base domain suffix, e.g. "t3.example.com".
+	// DomainSuffix is the legacy/default base domain suffix, e.g. "t3.example.com".
+	// When wildcard Caddy labels are present on the relay container, those labels
+	// become the source of truth for served zones and this value is used only as a
+	// fallback/default.
 	DomainSuffix string `json:"domain_suffix,omitempty"`
-	// RelayHost is the hostname serving the relay API, e.g. "relay.t3.example.com".
+	// RelayHost is the legacy/default relay API hostname, e.g. "relay.t3.example.com".
 	RelayHost string `json:"relay_host,omitempty"`
 	// DBPath is the file path to the SQLite database.
 	DBPath string `json:"db_path,omitempty"`
@@ -37,14 +41,21 @@ type RelayApp struct {
 	Tokens string `json:"tokens,omitempty"`
 	// SharedSecretFile is the path to the file containing the shared secret.
 	SharedSecretFile string `json:"shared_secret_file,omitempty"`
+	// TailscaleHostname is the hostname presented by the embedded tsnet node.
+	TailscaleHostname string `json:"tailscale_hostname,omitempty"`
+	// TailscaleStateDir is the directory used to persist tsnet state.
+	TailscaleStateDir string `json:"tailscale_state_dir,omitempty"`
 
 	// runtime state
-	store        *Store
-	docker       *dockerclient.Client
-	sharedSecret []byte
-	tokenList    []string
-	logger       *zap.Logger
-	cancelDisc   context.CancelFunc
+	store          *Store
+	docker         *dockerclient.Client
+	sharedSecret   []byte
+	tokenList      []string
+	supportedZones []string
+	primaryZone    string
+	logger         *zap.Logger
+	cancelDisc     context.CancelFunc
+	tailnet        *tailnetRuntime
 }
 
 // CaddyModule implements caddy.Module.
@@ -80,6 +91,17 @@ func (a *RelayApp) Provision(ctx caddy.Context) error {
 		a.sharedSecret = []byte(strings.TrimSpace(string(data)))
 	}
 
+	if a.TailscaleHostname == "" {
+		a.TailscaleHostname = "t3code-relay"
+	}
+	if a.TailscaleStateDir == "" {
+		baseDir := filepath.Dir(a.DBPath)
+		if baseDir == "." || baseDir == "" {
+			baseDir = "/var/lib/t3code-relay"
+		}
+		a.TailscaleStateDir = filepath.Join(baseDir, "tsnet")
+	}
+
 	return nil
 }
 
@@ -103,15 +125,25 @@ func (a *RelayApp) Start() error {
 		return fmt.Errorf("t3code_relay: create docker client: %w", err)
 	}
 
+	if err := a.refreshServedZones(context.Background()); err != nil {
+		return fmt.Errorf("t3code_relay: discover served zones: %w", err)
+	}
+
+	a.tailnet, err = startTailnet(context.Background(), a)
+	if err != nil {
+		return fmt.Errorf("t3code_relay: start tailnet: %w", err)
+	}
+
 	// start discovery
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancelDisc = cancel
 	go runDiscovery(ctx, a)
 
 	a.logger.Info("t3code_relay started",
-		zap.String("domain_suffix", a.DomainSuffix),
-		zap.String("relay_host", a.RelayHost),
+		zap.Strings("supported_zones", a.supportedZones),
+		zap.String("primary_zone", a.primaryZone),
 		zap.Int("probe_port", a.ProbePort),
+		zap.String("tailscale_hostname", a.TailscaleHostname),
 	)
 	return nil
 }
@@ -127,14 +159,22 @@ func (a *RelayApp) Stop() error {
 	if a.store != nil {
 		a.store.Close()
 	}
+	if a.tailnet != nil {
+		_ = a.tailnet.Close()
+	}
 	return nil
 }
 
 // --- Accessor methods used by the HTTP handlers ---
 
-// LookupByHost returns an environment by its full hostname.
+// LookupByHost returns an environment by parsing a served hostname and
+// resolving its left-hand environment label.
 func (a *RelayApp) LookupByHost(hostname string) (Environment, bool) {
-	return a.store.GetByHost(hostname)
+	name, _, ok := a.ParseServedHost(hostname)
+	if !ok {
+		return Environment{}, false
+	}
+	return a.store.GetByName(name)
 }
 
 // ListEnvironments returns all environments from the store.
@@ -166,6 +206,41 @@ func (a *RelayApp) GetStore() *Store {
 // GetDocker returns the Docker client (used by discovery and API handler for live probes).
 func (a *RelayApp) GetDocker() *dockerclient.Client {
 	return a.docker
+}
+
+// ParseServedHost parses a public host of the form <name>.<served-zone>.
+func (a *RelayApp) ParseServedHost(host string) (name, zone string, ok bool) {
+	return parseServedHost(host, a.supportedZones)
+}
+
+// SupportedZones returns the served wildcard zones discovered from Caddy labels.
+func (a *RelayApp) SupportedZones() []string {
+	return append([]string(nil), a.supportedZones...)
+}
+
+// PublishedHostname returns the canonical published hostname for an environment.
+func (a *RelayApp) PublishedHostname(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if name == "" {
+		return ""
+	}
+	if a.primaryZone == "" {
+		return name
+	}
+	return name + "." + a.primaryZone
+}
+
+func (a *RelayApp) refreshServedZones(ctx context.Context) error {
+	zones, err := discoverServedZones(ctx, a.docker, a.logger)
+	if err != nil {
+		return err
+	}
+	a.supportedZones = zones
+	a.primaryZone = primaryZone(zones, a.DomainSuffix, a.RelayHost)
+	if len(a.supportedZones) == 0 && a.primaryZone != "" {
+		a.supportedZones = []string{a.primaryZone}
+	}
+	return nil
 }
 
 // --- Caddyfile parsing ---
@@ -216,6 +291,16 @@ func (a *RelayApp) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			a.SharedSecretFile = d.Val()
+		case "tailscale_hostname":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			a.TailscaleHostname = d.Val()
+		case "tailscale_state_dir":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			a.TailscaleStateDir = d.Val()
 		default:
 			return d.Errf("unknown t3code_relay option: %s", d.Val())
 		}

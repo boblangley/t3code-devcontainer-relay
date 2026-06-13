@@ -1,25 +1,30 @@
 # Tailscale Setup
 
-This page explains what Tailscale is, how to add the relay's sidecar node to your tailnet, and
-how to configure split DNS so devices on your tailnet can reach `*.t3.example.com`.
+This page explains what Tailscale is, how to add the relay's embedded tailnet node to your
+tailnet, and how to configure split DNS so devices on your tailnet can reach
+`*.t3.example.com`.
 
 ---
 
 ## What Tailscale does here
 
 A **tailnet** is your own private, encrypted network overlay that connects your devices across the
-internet — your phone in a coffee shop, your laptop at work, and your server at home can all
-communicate as if they were on the same local network, without any port-forwarding or VPN server
-to manage.
+internet.
 
-The relay stack includes a `tailscale` sidecar container. This container joins your tailnet as a
-node named `t3code-relay`. When a Tailscale device (phone, laptop) connects to
-`relay.t3.example.com` or any `*.t3.example.com` address, it reaches that node, which forwards
-the traffic to Caddy (which terminates TLS and routes to your devcontainers).
+The relay stack embeds a Tailscale node directly inside the `caddy` container using
+[`tsnet`](https://tailscale.com/docs/features/tsnet). That embedded node joins your tailnet as a
+machine such as `t3code-relay`.
 
-**Important:** your local machine does NOT join the tailnet. Only the sidecar container does.
-Local access (on the same machine running Docker) uses dnsmasq instead — see
-[local-dns.md](local-dns.md).
+When a Tailscale device looks up `relay.t3.example.com` or any `*.t3.example.com` address:
+
+1. Tailscale sends the DNS query to the relay node because of your split-DNS rule.
+2. The relay answers with its own tailnet IP.
+3. The device connects to that tailnet IP on TCP 443.
+4. The relay forwards that connection to the local Caddy listener, which terminates TLS and routes
+   to the correct devcontainer.
+
+**Important:** your local machine does NOT join the tailnet. Local access still uses dnsmasq on
+the host — see [local-dns.md](local-dns.md).
 
 ---
 
@@ -27,125 +32,97 @@ Local access (on the same machine running Docker) uses dnsmasq instead — see
 
 - A Tailscale account. Sign up free at [tailscale.com](https://tailscale.com).
 - The relay stack cloned and `.env` partially filled in (see [setup-guide.md](setup-guide.md)
-  Stages 1–4). You will come back here for Stage 6.
+  Stages 1–4).
 
 ---
 
 ## Step 1 — Create an auth key
 
-An auth key lets a device join your tailnet without a browser login. The sidecar container uses
-one on start-up.
+An auth key lets the embedded relay node join your tailnet without a browser login.
 
 1. Log in to the [Tailscale admin console](https://login.tailscale.com/admin).
-2. Click **Settings** in the left sidebar.
-3. Click **Keys**.
-4. Click **Generate auth key**.
-5. Set a description, e.g. `t3code-relay sidecar`.
-6. Check **Reusable** — this lets the key work across container restarts without generating a
-   new key each time.
-7. Check **Ephemeral** — ephemeral nodes are automatically removed from your tailnet when they
-   go offline, keeping the Machines list clean. The trade-off: if the container is down for
-   maintenance, the node disappears from the list until it comes back up. This is the recommended
-   setting.
-8. Click **Generate key**.
-9. Copy the key (it starts with `tskey-auth-`). **This is the only time Tailscale will show it.**
+2. Click **Settings** → **Keys**.
+3. Click **Generate auth key**.
+4. Set a description, e.g. `t3code-relay embedded node`.
+5. Check **Reusable**.
+6. Check **Ephemeral**.
+7. Click **Generate key**.
+8. Copy the key (`tskey-auth-...`).
 
 ---
 
 ## Step 2 — Add the key to `.env`
 
-Open `.env` in the repo root and find the line:
-
-```dotenv
-TS_AUTHKEY=
-```
-
-Paste your key immediately after the `=`, with no spaces:
+Open `.env` and set:
 
 ```dotenv
 TS_AUTHKEY=tskey-auth-abc123EXAMPLE
+TAILSCALE_HOSTNAME=t3code-relay
 ```
 
-**Never commit `.env`.** The auth key lives only in `.env` on your machine.
-See [secrets-and-tokens.md](secrets-and-tokens.md) for why credentials belong here.
+Change `TAILSCALE_HOSTNAME` if you want a different machine name in the tailnet.
 
 ---
 
-## Step 3 — Start (or restart) the stack
-
-If the stack is already running (from Stage 5 of [setup-guide.md](setup-guide.md)), restart it to
-pick up the new key:
+## Step 3 — Start or restart the stack
 
 ```bash
 docker compose up -d
 ```
 
-If you are running this step for the first time, this command starts all three services. The
-`tailscale` container will authenticate and join your tailnet within a few seconds.
+The `caddy` container will start the embedded `tsnet` node and join your tailnet within a few
+seconds.
 
 ---
 
 ## Step 4 — Verify the node appears
 
 1. Go to the [Tailscale admin console](https://login.tailscale.com/admin) → **Machines**.
-2. You should see a machine named **t3code-relay** in the list with a green status dot.
-3. Note the tailnet IP address shown for it (a `100.x.x.x` address). You will use it in Step 5.
+2. You should see a machine named `t3code-relay` or whatever you set in `TAILSCALE_HOSTNAME`.
+3. Note its tailnet IP (`100.x.x.x`). You will use it in Step 5.
 
-If the node does not appear after 30 seconds, check the sidecar logs:
+If the node does not appear after 30 seconds, check:
 
 ```bash
-docker compose logs tailscale
+docker compose logs caddy
 ```
 
-Look for `Login URL:` (means the key was not accepted and the container is waiting for a browser
-login — this should not happen with a valid auth key) or `authenticated` (success).
+Look for tsnet startup messages or a login URL.
 
 ---
 
 ## Step 5 — Configure split DNS
 
-**Split DNS** means "for names under a specific domain, ask this DNS server instead of the public
-internet." Without this, devices on your tailnet cannot resolve `relay.t3.example.com` because
-there are no public DNS records for it.
+Without split DNS, tailnet devices cannot resolve `relay.t3.example.com` because there are no
+public DNS records for these hosts.
 
-You will tell Tailscale: "for anything under `t3.example.com`, ask the sidecar node."
+In the Tailscale admin console:
 
-1. In the admin console, click **DNS** in the left sidebar.
-2. Scroll to **Nameservers** and click **Add nameserver** → **Custom**.
-3. In the **Nameserver** field, enter the tailnet IP of `t3code-relay` (the `100.x.x.x` address
-   from Step 4).
+1. Click **DNS**.
+2. Under **Nameservers**, click **Add nameserver** → **Custom**.
+3. Enter the tailnet IP of the relay node from Step 4.
 4. Check **Restrict to domain** and enter `t3.example.com`.
 5. Click **Save**.
 
-Tailscale now routes DNS queries for `*.t3.example.com` from tailnet devices to the sidecar node,
-which in turn resolves them to its own tailnet IP (because Caddy is listening on the sidecar's
-forwarded port 443).
+Repeat the same process for each additional `t3.<domain>` zone you choose to serve.
 
-> **Substitute your domain:** replace `t3.example.com` with `t3.yourdomain.com` everywhere above.
+> **Substitute your domain:** replace `t3.example.com` with `t3.yourdomain.com`.
 
 ---
 
 ## Step 6 — Verify from a tailnet device
 
-Install Tailscale on a second device (phone or laptop). Sign in with the same Tailscale account.
-Connect to your tailnet.
+From a second tailnet device, open:
 
-From that device, open a browser and go to:
-
-```
+```text
 https://relay.t3.example.com/health
 ```
 
-Expected response:
+Expected:
 
 ```json
 {"ok":true,"service":"relay"}
 ```
-
-If you see a TLS error, the wildcard certificate may still be issuing — wait a minute and retry.
-If you see a DNS failure ("site not found"), split DNS may not have propagated yet; wait 30
-seconds and retry, or check that the nameserver IP in the Tailscale DNS settings matches the
-`100.x.x.x` address of `t3code-relay` exactly.
 
 ---
 
@@ -153,37 +130,21 @@ seconds and retry, or check that the nameserver IP in the Tailscale DNS settings
 
 **Node does not appear in the Machines list**
 
-- Check `docker compose logs tailscale` for error messages.
-- Make sure `TS_AUTHKEY` in `.env` is set and has no trailing whitespace. Recreate the container
-  with `docker compose up -d --force-recreate tailscale`.
-- Auth keys expire. Go to **Settings** → **Keys** in the admin console and confirm the key is
-  still valid. If it expired, generate a new one and update `.env`.
+- Check `docker compose logs caddy`.
+- Confirm `TS_AUTHKEY` is set in `.env`.
+- Recreate the relay container with `docker compose up -d --force-recreate caddy`.
 
-**Split DNS not working — tailnet devices cannot resolve `*.t3.example.com`**
+**Split DNS is not working**
 
-- Confirm the nameserver IP in **DNS** → **Nameservers** exactly matches the tailnet IP of
-  `t3code-relay`. Tailnet IPs are stable but double-check they match.
-- On some platforms Tailscale needs the app to be open and connected for split DNS to take effect.
-  Ensure Tailscale is connected (not just installed) on the device.
-- Some corporate network configurations block Tailscale's DNS push. If you manage the device
-  yourself, confirm "Use Tailscale DNS settings" is enabled in the Tailscale app preferences.
+- Confirm the nameserver IP exactly matches the relay node's tailnet IP.
+- Confirm the restricted domain matches the zone you intend to serve, e.g. `t3.example.com`.
+- Make sure the Tailscale client on the device is connected and allowed to use Tailscale DNS.
 
-**TLS error when connecting over Tailscale (`certificate is not trusted` or `ERR_CERT_AUTHORITY_INVALID`)**
+**TLS error over Tailscale**
 
-- This usually means Caddy has not yet issued the wildcard certificate. Check
-  `docker compose logs caddy` for `certificate obtained successfully`. If the cert has issued and
-  you still see this error, your browser may have cached an earlier TLS failure — clear the
-  cache or try a private/incognito window.
+- Check `docker compose logs caddy` and wait for the wildcard certificate to finish issuing.
 
-**"Ephemeral" node keeps disappearing**
+**Ephemeral node disappears**
 
-- This is expected behaviour: ephemeral nodes are removed when the container stops. The node will
-  reappear when `docker compose up -d` brings the `tailscale` container back up and it
-  re-authenticates. If you want the node to persist even when the container is down, uncheck
-  **Ephemeral** when generating the auth key.
-
-**Port 443 not reachable on the sidecar node**
-
-- The sidecar is on the `ts-ingress` internal Docker network alongside `caddy`. It forwards raw
-  TCP 443 to `caddy:443` using the inline `ts_serve` config in `docker-compose.yml`. Confirm
-  both containers are running: `docker compose ps`.
+- This is expected when the container stops. Use a non-ephemeral auth key if you want the node to
+  remain listed while offline.
