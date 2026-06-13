@@ -48,6 +48,7 @@
         tokens             {$RELAY_TOKENS}
         shared_secret_file /run/secrets/t3relay-secret
         tailscale_hostname {$TAILSCALE_HOSTNAME}
+        tailscale_auth_key {$TS_AUTHKEY}
         tailscale_state_dir /var/lib/t3code-relay/tsnet
     }
 }

@@ -34,6 +34,7 @@ func startTailnet(ctx context.Context, app *RelayApp) (*tailnetRuntime, error) {
 	ts := &tsnet.Server{
 		Dir:      app.TailscaleStateDir,
 		Hostname: app.TailscaleHostname,
+		AuthKey:  app.TailscaleAuthKey,
 		UserLogf: func(format string, args ...any) {
 			app.logger.Info(fmt.Sprintf(format, args...))
 		},

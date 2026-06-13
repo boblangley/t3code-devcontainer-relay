@@ -43,6 +43,8 @@ type RelayApp struct {
 	SharedSecretFile string `json:"shared_secret_file,omitempty"`
 	// TailscaleHostname is the hostname presented by the embedded tsnet node.
 	TailscaleHostname string `json:"tailscale_hostname,omitempty"`
+	// TailscaleAuthKey is the auth key used to join the tailnet.
+	TailscaleAuthKey string `json:"tailscale_auth_key,omitempty"`
 	// TailscaleStateDir is the directory used to persist tsnet state.
 	TailscaleStateDir string `json:"tailscale_state_dir,omitempty"`
 
@@ -296,6 +298,11 @@ func (a *RelayApp) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			a.TailscaleHostname = d.Val()
+		case "tailscale_auth_key":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			a.TailscaleAuthKey = d.Val()
 		case "tailscale_state_dir":
 			if !d.NextArg() {
 				return d.ArgErr()
