@@ -253,7 +253,8 @@ Full details: [add-a-devcontainer.md](add-a-devcontainer.md)
   "features": {
     "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
       "stateParentDir": "/mnt/t3code-state"
-    }
+    },
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
   "containerEnv": {
     "DEVCONTAINER_ID": "${devcontainerId}",
@@ -276,6 +277,10 @@ Replace `myrepo` with your repository name. Open (or reopen) the container in VS
 editor. Within a minute, it will appear in the relay's environment list and will be accessible at
 `https://myrepo.t3.example.com`.
 
+For VS Code Remote-SSH, add the SSH config from
+[add-a-devcontainer.md](add-a-devcontainer.md#connecting-with-vs-code-remote-ssh) and connect to
+`myrepo.t3.example.com`.
+
 ---
 
 ## What you have now
@@ -285,6 +290,7 @@ editor. Within a minute, it will appear in the relay's environment list and will
 | `https://relay.t3.example.com` | The relay API your client connects to |
 | `https://web.t3.example.com` | The zero-install browser client |
 | `https://myrepo.t3.example.com` | Direct route to your devcontainer's T3Code server |
+| `ssh vscode@myrepo.t3.example.com` | Remote-SSH route to your devcontainer through the relay |
 
 If something is not working, check the per-topic pages for detailed troubleshooting:
 [cloudflare.md](cloudflare.md) · [local-dns.md](local-dns.md) · [tailscale.md](tailscale.md) ·

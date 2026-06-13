@@ -1,16 +1,24 @@
 package t3relay
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"go.uber.org/zap"
+	"golang.org/x/crypto/ssh"
 )
 
 // --- Store tests ---
@@ -250,6 +258,325 @@ func TestParseServedHost(t *testing.T) {
 	if _, _, ok := parseServedHost("repo.deep.t3.example.net", []string{"t3.example.net"}); ok {
 		t.Fatal("expected multi-label left hand side to be rejected")
 	}
+}
+
+func TestTailnetDNSPacketListenAddr(t *testing.T) {
+	ip4 := netip.MustParseAddr("100.64.39.97")
+	ip6 := netip.MustParseAddr("fd7a:115c:a1e0::da38:2762")
+
+	got, ok := tailnetDNSPacketListenAddr(ip4, ip6)
+	if !ok {
+		t.Fatal("expected IPv4 listen address")
+	}
+	if want := netip.AddrPortFrom(ip4, 53); got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+
+	got, ok = tailnetDNSPacketListenAddr(netip.Addr{}, ip6)
+	if !ok {
+		t.Fatal("expected IPv6 fallback listen address")
+	}
+	if want := netip.AddrPortFrom(ip6, 53); got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+
+	if got, ok = tailnetDNSPacketListenAddr(netip.Addr{}, netip.Addr{}); ok {
+		t.Fatalf("expected no listen address, got %s", got)
+	}
+}
+
+func TestProxyBidirectional_AllowsResponseAfterClientHalfClose(t *testing.T) {
+	client, proxyClient := tcpConnPair(t)
+	defer client.Close()
+	defer proxyClient.Close()
+
+	proxyBackend, backend := tcpConnPair(t)
+	defer proxyBackend.Close()
+	defer backend.Close()
+
+	go proxyBidirectional(proxyClient, proxyBackend)
+
+	serverDone := make(chan error, 1)
+	go func() {
+		got, err := io.ReadAll(backend)
+		if err != nil {
+			serverDone <- fmt.Errorf("backend read: %w", err)
+			return
+		}
+		if string(got) != "request" {
+			serverDone <- fmt.Errorf("backend read %q, want request", got)
+			return
+		}
+		if _, err := backend.Write([]byte("response")); err != nil {
+			serverDone <- fmt.Errorf("backend write: %w", err)
+			return
+		}
+		if cw, ok := backend.(closeWriter); ok {
+			_ = cw.CloseWrite()
+		}
+		serverDone <- nil
+	}()
+
+	if _, err := client.Write([]byte("request")); err != nil {
+		t.Fatalf("client write: %v", err)
+	}
+	if cw, ok := client.(closeWriter); ok {
+		if err := cw.CloseWrite(); err != nil {
+			t.Fatalf("client CloseWrite: %v", err)
+		}
+	} else {
+		t.Fatal("test TCP client does not support CloseWrite")
+	}
+
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("client read: %v", err)
+	}
+	if string(got) != "response" {
+		t.Fatalf("client read %q, want response", got)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tcpConnPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	client, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("dial tcp: %v", err)
+	}
+
+	select {
+	case server := <-accepted:
+		deadline := time.Now().Add(2 * time.Second)
+		_ = client.SetDeadline(deadline)
+		_ = server.SetDeadline(deadline)
+		return client, server
+	case err := <-acceptErr:
+		_ = client.Close()
+		t.Fatalf("accept tcp: %v", err)
+	case <-time.After(time.Second):
+		_ = client.Close()
+		t.Fatal("accept tcp timed out")
+	}
+
+	panic("unreachable")
+}
+
+func TestResolveSSHForwardTarget(t *testing.T) {
+	f, err := os.CreateTemp("", "relay-ssh-test-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	store, err := OpenStore(f.Name())
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	app := &RelayApp{
+		store:          store,
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
+		SSHBackendPort: 2222,
+	}
+	if err := store.Upsert(Environment{
+		ID: "env1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status: "running", FirstSeen: 1000, LastSeen: 1000,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	env, err := app.ResolveSSHForwardTarget("myrepo.t3.example.com", 22)
+	if err != nil {
+		t.Fatalf("ResolveSSHForwardTarget: %v", err)
+	}
+	if env.Name != "myrepo" {
+		t.Fatalf("expected myrepo, got %q", env.Name)
+	}
+
+	if _, err := app.ResolveSSHForwardTarget("myrepo.t3.example.com", 2222); err == nil {
+		t.Fatal("expected non-22 port to be rejected")
+	}
+	if _, err := app.ResolveSSHForwardTarget("myrepo.evil.example.com", 22); err == nil {
+		t.Fatal("expected unsupported hostname to be rejected")
+	}
+	if _, err := app.ResolveSSHForwardTarget("repo.deep.t3.example.com", 22); err == nil {
+		t.Fatal("expected multi-label environment name to be rejected")
+	}
+}
+
+func TestLoadOrCreateSSHSigner_PersistsHostKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
+
+	signer1, err := loadOrCreateSSHSigner(path)
+	if err != nil {
+		t.Fatalf("first loadOrCreateSSHSigner: %v", err)
+	}
+	signer2, err := loadOrCreateSSHSigner(path)
+	if err != nil {
+		t.Fatalf("second loadOrCreateSSHSigner: %v", err)
+	}
+
+	if got, want := string(signer2.PublicKey().Marshal()), string(signer1.PublicKey().Marshal()); got != want {
+		t.Fatal("expected persisted host key to be reused")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("expected key mode 0600, got %o", mode)
+	}
+}
+
+func TestTailnetSSHGateway_ForwardsOnlyValidatedDirectTCPIP(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	defer backend.Close()
+	backendPort := backend.Addr().(*net.TCPAddr).Port
+	backendDone := make(chan struct{})
+	go func() {
+		defer close(backendDone)
+		conn, err := backend.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "ok\n")
+	}()
+
+	f, err := os.CreateTemp("", "relay-ssh-forward-test-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	store, err := OpenStore(f.Name())
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	app := &RelayApp{
+		store:          store,
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
+		SSHAllowedUser: "vscode",
+		SSHBackendPort: backendPort,
+		SSHHostKeyFile: filepath.Join(t.TempDir(), "ssh_host_ed25519_key"),
+		logger:         zap.NewNop(),
+	}
+	if err := store.Upsert(Environment{
+		ID: "env1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "127.0.0.1", Port: 3773,
+		Status: "running", FirstSeen: 1000, LastSeen: 1000,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	gateway, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen gateway: %v", err)
+	}
+	defer gateway.Close()
+	go serveTailnetSSH(gateway, app)
+
+	client := dialTestSSHGateway(t, gateway.Addr().String(), "vscode")
+	defer client.Close()
+
+	forward, err := client.Dial("tcp", "myrepo.t3.example.com:22")
+	if err != nil {
+		t.Fatalf("direct-tcpip dial: %v", err)
+	}
+	defer forward.Close()
+
+	buf := make([]byte, 3)
+	if _, err := io.ReadFull(forward, buf); err != nil {
+		t.Fatalf("read forwarded data: %v", err)
+	}
+	if string(buf) != "ok\n" {
+		t.Fatalf("expected backend payload, got %q", string(buf))
+	}
+	<-backendDone
+
+	if _, err := client.Dial("tcp", "myrepo.t3.example.com:2222"); err == nil {
+		t.Fatal("expected requested non-22 port to be rejected")
+	}
+	if _, err := client.Dial("tcp", "unknown.t3.example.com:22"); err == nil {
+		t.Fatal("expected unknown host to be rejected")
+	}
+}
+
+func TestTailnetSSHGateway_RejectsNonVscodeUser(t *testing.T) {
+	app := &RelayApp{
+		SSHAllowedUser: "vscode",
+		SSHBackendPort: 2222,
+		SSHHostKeyFile: filepath.Join(t.TempDir(), "ssh_host_ed25519_key"),
+		logger:         zap.NewNop(),
+	}
+	gateway, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen gateway: %v", err)
+	}
+	defer gateway.Close()
+	go serveTailnetSSH(gateway, app)
+
+	if _, err := dialRawTestSSHGateway(gateway.Addr().String(), "root"); err == nil {
+		t.Fatal("expected root user to be rejected")
+	}
+}
+
+func dialTestSSHGateway(t *testing.T, addr, user string) *ssh.Client {
+	t.Helper()
+	client, err := dialRawTestSSHGateway(addr, user)
+	if err != nil {
+		t.Fatalf("dial SSH gateway: %v", err)
+	}
+	return client
+}
+
+func dialRawTestSSHGateway(addr, user string) (*ssh.Client, error) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	})
 }
 
 // --- Collision policy test ---

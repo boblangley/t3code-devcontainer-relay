@@ -47,6 +47,12 @@ type RelayApp struct {
 	TailscaleAuthKey string `json:"tailscale_auth_key,omitempty"`
 	// TailscaleStateDir is the directory used to persist tsnet state.
 	TailscaleStateDir string `json:"tailscale_state_dir,omitempty"`
+	// SSHHostKeyFile is the persisted private host key for the tailnet SSH gateway.
+	SSHHostKeyFile string `json:"ssh_host_key_file,omitempty"`
+	// SSHAllowedUser is the only username accepted by the tailnet SSH gateway.
+	SSHAllowedUser string `json:"ssh_allowed_user,omitempty"`
+	// SSHBackendPort is the port the devcontainer sshd feature listens on.
+	SSHBackendPort int `json:"ssh_backend_port,omitempty"`
 
 	// runtime state
 	store          *Store
@@ -102,6 +108,19 @@ func (a *RelayApp) Provision(ctx caddy.Context) error {
 			baseDir = "/var/lib/t3code-relay"
 		}
 		a.TailscaleStateDir = filepath.Join(baseDir, "tsnet")
+	}
+	if a.SSHHostKeyFile == "" {
+		baseDir := filepath.Dir(a.DBPath)
+		if baseDir == "." || baseDir == "" {
+			baseDir = "/var/lib/t3code-relay"
+		}
+		a.SSHHostKeyFile = filepath.Join(baseDir, "ssh_host_ed25519_key")
+	}
+	if a.SSHAllowedUser == "" {
+		a.SSHAllowedUser = "vscode"
+	}
+	if a.SSHBackendPort == 0 {
+		a.SSHBackendPort = 2222
 	}
 
 	return nil
@@ -308,6 +327,25 @@ func (a *RelayApp) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			a.TailscaleStateDir = d.Val()
+		case "ssh_host_key_file":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			a.SSHHostKeyFile = d.Val()
+		case "ssh_allowed_user":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			a.SSHAllowedUser = d.Val()
+		case "ssh_backend_port":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			p, err := strconv.Atoi(d.Val())
+			if err != nil {
+				return d.Errf("ssh_backend_port must be an integer: %v", err)
+			}
+			a.SSHBackendPort = p
 		default:
 			return d.Errf("unknown t3code_relay option: %s", d.Val())
 		}

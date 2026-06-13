@@ -7,6 +7,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/moby/moby/client v0.4.1
 	go.uber.org/zap v1.28.0
+	golang.org/x/crypto v0.52.0
 	modernc.org/sqlite v1.52.0
 	tailscale.com v1.100.0
 )
@@ -171,7 +172,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20260213171211-a408498e5541 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/mod v0.35.0 // indirect

@@ -50,5 +50,8 @@
         tailscale_hostname {$TAILSCALE_HOSTNAME}
         tailscale_auth_key {$TS_AUTHKEY}
         tailscale_state_dir /var/lib/t3code-relay/tsnet
+        ssh_host_key_file /var/lib/t3code-relay/ssh_host_ed25519_key
+        ssh_allowed_user vscode
+        ssh_backend_port 2222
     }
 }

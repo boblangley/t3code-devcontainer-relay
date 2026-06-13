@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -18,6 +19,7 @@ import (
 type tailnetRuntime struct {
 	server *tsnet.Server
 	tcp443 net.Listener
+	tcp22  net.Listener
 	tcp53  net.Listener
 	udp53  net.PacketConn
 	dnsTCP *dns.Server
@@ -71,13 +73,24 @@ func startTailnet(ctx context.Context, app *RelayApp) (*tailnetRuntime, error) {
 	}
 	go serveTailnetHTTPS(runtime.tcp443, app)
 
+	if runtime.tcp22, err = ts.Listen("tcp", ":22"); err != nil {
+		_ = runtime.Close()
+		return nil, fmt.Errorf("tsnet listen tcp :22: %w", err)
+	}
+	go serveTailnetSSH(runtime.tcp22, app)
+
 	dnsHandler := &tailnetDNSHandler{
 		app: app,
 		ip4: ip4,
 		ip6: ip6,
 	}
 
-	if runtime.udp53, err = ts.ListenPacket("udp", ":53"); err != nil {
+	dnsPacketAddr, ok := tailnetDNSPacketListenAddr(ip4, ip6)
+	if !ok {
+		_ = runtime.Close()
+		return nil, errors.New("tsnet listen udp :53: no tailscale IP available")
+	}
+	if runtime.udp53, err = ts.ListenPacket("udp", dnsPacketAddr.String()); err != nil {
 		_ = runtime.Close()
 		return nil, fmt.Errorf("tsnet listen udp :53: %w", err)
 	}
@@ -115,6 +128,9 @@ func (r *tailnetRuntime) Close() error {
 	if r.tcp443 != nil {
 		_ = r.tcp443.Close()
 	}
+	if r.tcp22 != nil {
+		_ = r.tcp22.Close()
+	}
 	if r.tcp53 != nil {
 		_ = r.tcp53.Close()
 	}
@@ -151,19 +167,33 @@ func proxyTailnetHTTPS(inbound net.Conn, app *RelayApp) {
 	}
 	defer backend.Close()
 
-	copyDone := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(backend, inbound)
-		_ = backend.SetDeadline(time.Now())
-		copyDone <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(inbound, backend)
-		_ = inbound.SetDeadline(time.Now())
-		copyDone <- struct{}{}
-	}()
-	<-copyDone
-	<-copyDone
+	proxyBidirectional(inbound, backend)
+}
+
+type closeWriter interface {
+	CloseWrite() error
+}
+
+func proxyBidirectional(client, backend net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go copyThenCloseWrite(&wg, backend, client)
+	go copyThenCloseWrite(&wg, client, backend)
+	wg.Wait()
+}
+
+func copyThenCloseWrite(wg *sync.WaitGroup, dst, src net.Conn) {
+	defer wg.Done()
+	_, _ = io.Copy(dst, src)
+	closeWrite(dst)
+}
+
+func closeWrite(conn net.Conn) {
+	if cw, ok := conn.(closeWriter); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = conn.SetDeadline(time.Now())
 }
 
 type tailnetDNSHandler struct {
@@ -232,4 +262,14 @@ func withOptionalAddr(field string, addr netip.Addr) zap.Field {
 		return zap.String(field, "")
 	}
 	return zap.String(field, addr.String())
+}
+
+func tailnetDNSPacketListenAddr(ip4, ip6 netip.Addr) (netip.AddrPort, bool) {
+	if ip4.IsValid() {
+		return netip.AddrPortFrom(ip4, 53), true
+	}
+	if ip6.IsValid() {
+		return netip.AddrPortFrom(ip6, 53), true
+	}
+	return netip.AddrPort{}, false
 }

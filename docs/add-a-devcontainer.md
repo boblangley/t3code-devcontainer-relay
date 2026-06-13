@@ -49,7 +49,8 @@ it with any configuration you already have:
   "features": {
     "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
       "stateParentDir": "/mnt/t3code-state"
-    }
+    },
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
   "containerEnv": {
     "DEVCONTAINER_ID": "${devcontainerId}",
@@ -96,6 +97,13 @@ you do not need to add a Node feature separately.
 `stateParentDir` points at a durable bind mount. At container startup, the feature stores server
 state under `/mnt/t3code-state/<DEVCONTAINER_ID>` so each devcontainer keeps a stable environment
 identity and SQLite database without sharing state with other devcontainers.
+
+```jsonc
+"ghcr.io/devcontainers/features/sshd:1": {}
+```
+
+Installs and starts an SSH server inside the devcontainer. The relay accepts VS Code Remote-SSH
+connections on tailnet port 22 and forwards them to the feature's internal SSH port.
 
 ### `containerEnv`
 
@@ -199,6 +207,38 @@ Container** after changing `devcontainer.json`.
 
 The relay discovers the new container within 30 seconds (the relay reconciles Docker state on a
 periodic schedule). You do not need to restart the relay stack.
+
+---
+
+## Connecting with VS Code Remote-SSH
+
+The relay also listens on tailnet TCP port 22 and acts as an SSH jump server. It accepts only
+SSH, only user `vscode`, and only forwarding requests to known devcontainer hostnames on port 22.
+
+Add this to your client machine's `~/.ssh/config`, replacing `example.com`:
+
+```sshconfig
+Host t3-gateway
+  HostName relay.t3.example.com
+  User vscode
+  Port 22
+  ForwardAgent no
+
+Host *.t3.example.com
+  User vscode
+  Port 22
+  ProxyJump t3-gateway
+  ForwardAgent yes
+```
+
+Then connect VS Code Remote-SSH to:
+
+```text
+myrepo.t3.example.com
+```
+
+The first connection to the gateway asks you to accept the relay SSH host key. The key is generated
+once and persisted in the relay data volume.
 
 ---
 
