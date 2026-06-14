@@ -198,6 +198,33 @@ func (a *RelayApp) LookupByHost(hostname string) (Environment, bool) {
 	return a.store.GetByName(name)
 }
 
+func (a *RelayApp) LookupExposureByHost(hostname string) (Environment, Exposure, bool) {
+	hostLabel, _, ok := a.ParseServedHost(hostname)
+	if !ok {
+		return Environment{}, Exposure{}, false
+	}
+	if _, ok := a.store.GetByName(hostLabel); ok {
+		return Environment{}, Exposure{}, false
+	}
+	delimiter := strings.LastIndex(hostLabel, "--")
+	if delimiter <= 0 || delimiter+2 >= len(hostLabel) {
+		return Environment{}, Exposure{}, false
+	}
+	exposure, ok := a.store.GetExposureByHostLabel(hostLabel)
+	if !ok {
+		return Environment{}, Exposure{}, false
+	}
+	env, ok := a.store.GetByID(exposure.EnvironmentID)
+	if !ok || env.Status == "stopped" {
+		return Environment{}, Exposure{}, false
+	}
+	return env, exposure, true
+}
+
+func (a *RelayApp) ValidateSharedSecret(candidate string) bool {
+	return validateSharedSecret(a.sharedSecret, candidate)
+}
+
 // ListEnvironments returns all environments from the store.
 func (a *RelayApp) ListEnvironments() []Environment {
 	return a.store.List()

@@ -19,6 +19,13 @@ func validateBearer(tokens []string, token string) bool {
 	return false
 }
 
+func validateSharedSecret(secret []byte, candidate string) bool {
+	if candidate == "" || len(secret) == 0 {
+		return false
+	}
+	return subtle.ConstantTimeCompare(secret, []byte(candidate)) == 1
+}
+
 // extractBearer extracts the token from an Authorization: Bearer <token> header value.
 // Returns empty string if the header is not in the expected format.
 func extractBearer(authHeader string) string {

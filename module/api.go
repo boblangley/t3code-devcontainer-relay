@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,17 +83,27 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 		return writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "relay"})
 	}
 
-	// All other routes require Bearer auth
 	token := extractBearer(r.Header.Get("Authorization"))
-	if !a.app.ValidateBearer(token) {
+	bearerAuthorized := a.app.ValidateBearer(token)
+	sharedSecretAuthorized := a.app.ValidateSharedSecret(r.Header.Get("X-Relay-Secret"))
+	exposureRoute := strings.HasSuffix(path, "/exposures") || strings.Contains(path, "/exposures/")
+
+	if !bearerAuthorized && !(exposureRoute && sharedSecretAuthorized) {
 		return writeJSON(w, http.StatusUnauthorized, map[string]string{
 			"_tag":   "RelayAuthInvalidError",
 			"code":   "auth_invalid",
-			"reason": "invalid_bearer",
+			"reason": "invalid_credentials",
 		})
 	}
 
 	switch {
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/exposures"):
+		return a.handleListExposures(w, r, envIDFromPath(path, "/exposures"))
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/exposures"):
+		return a.handleUpsertExposure(w, r, envIDFromPath(path, "/exposures"))
+	case r.Method == http.MethodDelete && strings.Contains(path, "/exposures/"):
+		envID, exposureName := envIDAndExposureNameFromPath(path)
+		return a.handleDeleteExposure(w, r, envID, exposureName)
 	case r.Method == http.MethodGet && path == "/v1/environments":
 		return a.handleListEnvironments(w, r)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/status"):
@@ -109,6 +121,31 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 	}
 }
 
+func envIDAndExposureNameFromPath(path string) (string, string) {
+	const marker = "/exposures/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return "", ""
+	}
+	envPath := strings.TrimPrefix(path[:idx], "/v1/environments/")
+	name := path[idx+len(marker):]
+	if envPath == path[:idx] || envPath == "" || name == "" || strings.Contains(name, "/") {
+		return "", ""
+	}
+	envPath, err := url.PathUnescape(envPath)
+	if err != nil {
+		return "", ""
+	}
+	name, err = url.PathUnescape(name)
+	if err != nil {
+		return "", ""
+	}
+	if strings.Contains(envPath, "/") || strings.Contains(name, "/") {
+		return "", ""
+	}
+	return envPath, name
+}
+
 // envIDFromPath extracts the environment ID from a path like /v1/environments/:id/status.
 func envIDFromPath(path, suffix string) string {
 	path = strings.TrimSuffix(path, suffix)
@@ -116,7 +153,14 @@ func envIDFromPath(path, suffix string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return parts[len(parts)-1]
+	id, err := url.PathUnescape(parts[len(parts)-1])
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(id, "/") {
+		return ""
+	}
+	return id
 }
 
 // envIDFromEnvironmentPath extracts the environment ID from a path like
@@ -124,6 +168,13 @@ func envIDFromPath(path, suffix string) string {
 func envIDFromEnvironmentPath(path string) string {
 	id := strings.TrimPrefix(path, "/v1/environments/")
 	if id == path || id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	id, err := url.PathUnescape(id)
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(id, "/") {
 		return ""
 	}
 	return id
@@ -292,6 +343,164 @@ func (a *APIHandler) handleDeleteEnvironment(w http.ResponseWriter, r *http.Requ
 		})
 	}
 
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+type exposureResponse struct {
+	EnvironmentID string `json:"environmentId"`
+	Name          string `json:"name"`
+	Host          string `json:"host"`
+	URL           string `json:"url"`
+	Scheme        string `json:"scheme"`
+	Port          int    `json:"port"`
+	ExpiresAt     string `json:"expiresAt"`
+}
+
+func exposureRecord(app *RelayApp, env Environment, exposure Exposure) exposureResponse {
+	host := app.PublishedHostname(exposure.HostLabel)
+	return exposureResponse{
+		EnvironmentID: relayEnvironmentID(env),
+		Name:          exposure.Name,
+		Host:          host,
+		URL:           "https://" + host,
+		Scheme:        exposure.Scheme,
+		Port:          exposure.Port,
+		ExpiresAt:     time.Unix(exposure.ExpiresAt, 0).UTC().Format(time.RFC3339),
+	}
+}
+
+func normalizeExposureName(name string) string {
+	name = sanitizeName(name)
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+	return strings.Trim(name, "-")
+}
+
+func defaultExposureName(port int) string {
+	return strconv.Itoa(port)
+}
+
+func validateExposurePort(port int) bool {
+	return port > 0 && port <= 65535
+}
+
+func (a *APIHandler) handleListExposures(w http.ResponseWriter, r *http.Request, envID string) error {
+	env, ok := a.lookupEnvironmentByRelayID(envID)
+	if !ok {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
+		})
+	}
+	_ = a.app.GetStore().DeleteExpiredExposures()
+	exposures := a.app.GetStore().ListExposures(env.ID)
+	records := make([]exposureResponse, 0, len(exposures))
+	for _, exposure := range exposures {
+		records = append(records, exposureRecord(a.app, env, exposure))
+	}
+	return writeJSON(w, http.StatusOK, map[string]any{"exposures": records})
+}
+
+func (a *APIHandler) handleUpsertExposure(w http.ResponseWriter, r *http.Request, envID string) error {
+	env, ok := a.lookupEnvironmentByRelayID(envID)
+	if !ok {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
+		})
+	}
+
+	var body struct {
+		Name       string `json:"name"`
+		Scheme     string `json:"scheme"`
+		Port       int    `json:"port"`
+		TTLSeconds int    `json:"ttlSeconds"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&body); err != nil {
+			return writeJSON(w, http.StatusBadRequest, map[string]string{
+				"_tag": "BadRequestError", "code": "bad_request", "reason": "invalid_json",
+			})
+		}
+	}
+	if !validateExposurePort(body.Port) {
+		return writeJSON(w, http.StatusBadRequest, map[string]string{
+			"_tag": "BadRequestError", "code": "bad_request", "reason": "invalid_port",
+		})
+	}
+
+	scheme := strings.ToLower(strings.TrimSpace(body.Scheme))
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme != "http" {
+		return writeJSON(w, http.StatusBadRequest, map[string]string{
+			"_tag": "BadRequestError", "code": "bad_request", "reason": "unsupported_scheme",
+		})
+	}
+
+	name := normalizeExposureName(body.Name)
+	if name == "" {
+		name = defaultExposureName(body.Port)
+	}
+	if name == env.Name {
+		return writeJSON(w, http.StatusBadRequest, map[string]string{
+			"_tag": "BadRequestError", "code": "bad_request", "reason": "exposure_name_conflicts_with_environment",
+		})
+	}
+
+	ttl := body.TTLSeconds
+	if ttl <= 0 {
+		ttl = 3600
+	}
+	if ttl > 86400 {
+		ttl = 86400
+	}
+
+	now := time.Now().Unix()
+	exposure := Exposure{
+		EnvironmentID: env.ID,
+		Name:          name,
+		HostLabel:     env.Name + "--" + name,
+		Scheme:        scheme,
+		Port:          body.Port,
+		CreatedAt:     now,
+		LastSeen:      now,
+		ExpiresAt:     now + int64(ttl),
+	}
+	if err := a.app.GetStore().UpsertExposure(exposure); err != nil {
+		return writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"_tag": "StoreError", "code": "store_error", "reason": "upsert_exposure_failed",
+		})
+	}
+
+	return writeJSON(w, http.StatusOK, exposureRecord(a.app, env, exposure))
+}
+
+func (a *APIHandler) handleDeleteExposure(w http.ResponseWriter, r *http.Request, envID, exposureName string) error {
+	if envID == "" || exposureName == "" {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_exposure",
+		})
+	}
+	env, ok := a.lookupEnvironmentByRelayID(envID)
+	if !ok {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_environment",
+		})
+	}
+	name := normalizeExposureName(exposureName)
+	deleted, err := a.app.GetStore().DeleteExposure(env.ID, name)
+	if err != nil {
+		return writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"_tag": "StoreError", "code": "store_error", "reason": "delete_exposure_failed",
+		})
+	}
+	if !deleted {
+		return writeJSON(w, http.StatusNotFound, map[string]string{
+			"_tag": "NotFoundError", "code": "not_found", "reason": "unknown_exposure",
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

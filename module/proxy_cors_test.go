@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // A CORS preflight carries no Authorization header, so it must be answered
@@ -212,6 +213,79 @@ func TestProxyHandler_RelayBearerInjectsRelaySecret(t *testing.T) {
 		t.Fatalf("ServeHTTP: %v", err)
 	}
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyHandler_RegisteredExposureRoutesToExposurePort(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "repo.t3.example.com" {
+			t.Errorf("upstream host = %q, want target host", r.Host)
+		}
+		_, _ = w.Write([]byte(`{"preview":true}`))
+	}))
+	defer target.Close()
+
+	host, portString, err := net.SplitHostPort(target.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split target address: %v", err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatalf("parse target port: %v", err)
+	}
+
+	f, err := os.CreateTemp("", "relay-proxy-exposure-test-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	store, err := OpenStore(f.Name())
+	if err != nil {
+		_ = os.Remove(f.Name())
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer func() {
+		store.Close()
+		_ = os.Remove(f.Name())
+	}()
+
+	if err := store.Upsert(Environment{
+		ID: "env-1", ContainerID: "c1", Name: "repo",
+		Hostname: "repo.t3.example.com", IP: host, Port: 3773,
+		Status: "running", FirstSeen: 1000, LastSeen: 1000,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := store.UpsertExposure(Exposure{
+		EnvironmentID: "env-1",
+		Name:          "vite",
+		HostLabel:     "repo--vite",
+		Scheme:        "http",
+		Port:          port,
+		CreatedAt:     time.Now().Unix(),
+		LastSeen:      time.Now().Unix(),
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("UpsertExposure: %v", err)
+	}
+
+	p := &ProxyHandler{app: &RelayApp{
+		tokenList:      []string{"tok1"},
+		store:          store,
+		sharedSecret:   []byte("test-secret"),
+		supportedZones: []string{"t3.example.com"},
+		primaryZone:    "t3.example.com",
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "https://repo--vite.t3.example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTP(rec, req, nil); err != nil {
+		t.Fatalf("ServeHTTP: %v", err)
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}

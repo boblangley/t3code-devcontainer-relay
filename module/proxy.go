@@ -83,15 +83,25 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 		host = h
 	}
 
-	env, ok := p.app.LookupByHost(host)
-	if !ok {
-		return writeJSONError(w, http.StatusNotFound, "not_found", "unknown_host")
+	env, exposure, isExposure := p.app.LookupExposureByHost(host)
+	if !isExposure {
+		var ok bool
+		env, ok = p.app.LookupByHost(host)
+		if !ok {
+			return writeJSONError(w, http.StatusNotFound, "not_found", "unknown_host")
+		}
 	}
 
 	// 3. Reverse-proxy to container
+	scheme := "http"
+	port := env.Port
+	if isExposure {
+		scheme = exposure.Scheme
+		port = exposure.Port
+	}
 	target := &url.URL{
-		Scheme: "http",
-		Host:   fmt.Sprintf("%s:%d", env.IP, env.Port),
+		Scheme: scheme,
+		Host:   fmt.Sprintf("%s:%d", env.IP, port),
 	}
 
 	secret := p.app.SharedSecret()

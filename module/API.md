@@ -32,6 +32,9 @@ The module exposes two surfaces on one Caddy instance (one listener, :443):
 | GET | `/v1/environments` | Bearer | List environments from SQLite. Each record matches contracts `RelayClientEnvironmentRecord` exactly: `{ environmentId, label, endpoint: { httpBaseUrl, wsBaseUrl, providerKind: "t3_relay" }, linkedAt }` — `environmentId` is the T3 server descriptor id from `/.well-known/t3/environment` when available, while the relay may keep a separate internal devcontainer row key. `label` is the relay's container-derived name (`t3relay.host` override or Docker container name), never the server probe label. `label` and `linkedAt` are non-empty (the client decodes with Effect Schema). `httpBaseUrl`/`wsBaseUrl` point at `https://<name>.t3.<domain>` (surface B). Per-environment status/platform are read from `/status`, not this record. |
 | POST | `/v1/environments/:id/status` | Bearer | Probe the container (`GET /.well-known/t3/environment` with `X-Relay-Secret`); return `{ environmentId, endpoint, status: online\|offline, checkedAt, descriptor }`. `environmentId` must match the listed environment id and, when present, `descriptor.environmentId`. The relay rewrites `descriptor.label` to the container-derived name for consistent UI display. |
 | POST | `/v1/environments/:id/connect` | Bearer | Return `{ environmentId, endpoint, credential, expiresAt }`. `environmentId` must match the listed environment id. Since surface B already injects `X-Relay-Secret`, `credential` is a non-secret marker (the server trusts the relay-injected header); the client uses `endpoint` to open its session over surface B. |
+| GET | `/v1/environments/:id/exposures` | Bearer or `X-Relay-Secret` | List non-expired on-demand port exposures for one environment. |
+| POST | `/v1/environments/:id/exposures` | Bearer or `X-Relay-Secret` | Register or refresh an on-demand port exposure. Body: `{ port, name?, scheme?, ttlSeconds? }`. `scheme` currently supports only `http`; `ttlSeconds` defaults to 3600 and is capped at 86400. Returns `{ environmentId, name, host, url, scheme, port, expiresAt }`. |
+| DELETE | `/v1/environments/:id/exposures/:name` | Bearer or `X-Relay-Secret` | Remove one on-demand exposure from an environment. |
 | DELETE | `/v1/environments/:id` | Bearer | Forget an environment row from SQLite. This is intended for stopped environments that will never return. If the matching devcontainer is still running and discoverable, the next discovery pass will recreate the row. Returns `204` when deleted and `404` for an unknown environment. |
 | OPTIONS | `*` | none | CORS preflight (headers per the CORS section below). |
 
@@ -45,11 +48,26 @@ metadata, the relay MAY return a minimal stub (see ASSUMPTION notes below).
 A single request-time handler (no per-container route generation; see
 `docs/decisions/0003-route-merge-mechanism.md`):
 
-1. Validate `Authorization: Bearer <token>` against `RELAY_TOKENS` (401 if absent/invalid).
-2. Resolve `Host` (`<name>.t3.<domain>`) → environment row in SQLite → container IP.
-3. Reverse-proxy (HTTP **and** WebSocket upgrade) to `<ip>:<port>` (default 3773),
-   **removing** the client `Authorization` header and **setting** `X-Relay-Secret`.
+1. If `Authorization: Bearer <token>` matches `RELAY_TOKENS`, treat the request
+   as relay-admin traffic and translate it to `X-Relay-Secret`. Otherwise pass
+   the request through so environment-issued credentials continue to work.
+2. Resolve `Host` to either an environment row (`<name>.t3.<domain>`) or an
+   on-demand exposure (`<name>--<exposure>.t3.<domain>`).
+3. Reverse-proxy (HTTP **and** WebSocket upgrade) to the environment server
+   port (default 3773) or the registered exposure port,
+   removing `Authorization` and setting `X-Relay-Secret` only for relay-admin
+   traffic.
 4. 404 if the host is unknown, 502/504 if the container is unreachable.
+
+On-demand exposure hostnames intentionally stay one DNS label under
+`t3.<domain>` so the existing `*.t3.<domain>` wildcard certificate remains
+valid. The delimiter is `--`, for example:
+
+```text
+myrepo.t3.example.com          -> T3Code server on :3773
+myrepo--vite.t3.example.com    -> registered preview server on :5173
+myrepo--3000.t3.example.com    -> registered preview server on :3000
+```
 
 This handler carries the stock server session flow transparently: the client's
 calls to `<httpBaseUrl>/oauth/token`, `/api/auth/websocket-ticket`, and the
