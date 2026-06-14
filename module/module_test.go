@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,6 +196,65 @@ func TestStore_UpsertConflict_UpdatesLastSeen(t *testing.T) {
 	}
 }
 
+func TestStore_ExposureLifecycle(t *testing.T) {
+	f, err := os.CreateTemp("", "relay-exposure-test-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	store, err := OpenStore(f.Name())
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	env := Environment{
+		ID: "env1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status: "running", FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert env: %v", err)
+	}
+
+	exposure := Exposure{
+		EnvironmentID: "env1",
+		Name:          "vite",
+		HostLabel:     "myrepo--vite",
+		Scheme:        "http",
+		Port:          5173,
+		CreatedAt:     2000,
+		LastSeen:      2000,
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}
+	if err := store.UpsertExposure(exposure); err != nil {
+		t.Fatalf("UpsertExposure: %v", err)
+	}
+
+	got, ok := store.GetExposureByHostLabel("myrepo--vite")
+	if !ok {
+		t.Fatal("expected exposure by host label")
+	}
+	if got.Name != "vite" || got.Port != 5173 {
+		t.Fatalf("exposure = %#v, want vite:5173", got)
+	}
+
+	list := store.ListExposures("env1")
+	if len(list) != 1 {
+		t.Fatalf("ListExposures length = %d, want 1", len(list))
+	}
+
+	deleted, err := store.DeleteExposure("env1", "vite")
+	if err != nil {
+		t.Fatalf("DeleteExposure: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected DeleteExposure to report deletion")
+	}
+}
+
 // --- Hostname sanitization tests ---
 
 func TestSanitizeName(t *testing.T) {
@@ -294,7 +354,7 @@ func TestProxyBidirectional_AllowsResponseAfterClientHalfClose(t *testing.T) {
 	defer proxyBackend.Close()
 	defer backend.Close()
 
-	go proxyBidirectional(proxyClient, proxyBackend)
+	go proxyBidirectional(proxyClient, proxyBackend, zap.NewNop(), 1)
 
 	serverDone := make(chan error, 1)
 	go func() {
@@ -940,6 +1000,69 @@ func TestAPIHandler_DeleteEnvironment_NotFound(t *testing.T) {
 	}
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAPIHandler_UpsertExposureWithSharedSecret(t *testing.T) {
+	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	env := Environment{
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status: "running", FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/environments/devcontainer-1/exposures", strings.NewReader(`{"name":"Vite Dev","port":5173,"ttlSeconds":120}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Relay-Secret", "test-secret")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp exposureResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Host != "myrepo--vite-dev.t3.example.com" {
+		t.Fatalf("host = %q, want myrepo--vite-dev.t3.example.com", resp.Host)
+	}
+	if resp.URL != "https://myrepo--vite-dev.t3.example.com" {
+		t.Fatalf("url = %q", resp.URL)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/environments/devcontainer-1/exposures/Vite%20Dev", nil)
+	deleteReq.Header.Set("X-Relay-Secret", "test-secret")
+	deleteW := httptest.NewRecorder()
+	if err := ah.ServeHTTP(deleteW, deleteReq, noopHandler()); err != nil {
+		t.Fatalf("delete ServeHTTP error: %v", err)
+	}
+	if deleteW.Code != http.StatusNoContent {
+		t.Fatalf("expected delete 204, got %d: %s", deleteW.Code, deleteW.Body.String())
+	}
+}
+
+func TestAPIHandler_SharedSecretCannotListEnvironments(t *testing.T) {
+	ah, _, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments", nil)
+	req.Header.Set("X-Relay-Secret", "test-secret")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

@@ -9,12 +9,15 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 	"tailscale.com/tsnet"
 )
+
+var tailnetHTTPSBridgeID atomic.Uint64
 
 type tailnetRuntime struct {
 	server *tsnet.Server
@@ -160,40 +163,86 @@ func serveTailnetHTTPS(listener net.Listener, app *RelayApp) {
 func proxyTailnetHTTPS(inbound net.Conn, app *RelayApp) {
 	defer inbound.Close()
 
+	bridgeID := tailnetHTTPSBridgeID.Add(1)
+	started := time.Now()
+	app.logger.Info("tailnet https bridge started",
+		zap.Uint64("bridge_id", bridgeID),
+		zap.String("tailnet_remote_addr", inbound.RemoteAddr().String()),
+		zap.String("tailnet_local_addr", inbound.LocalAddr().String()),
+	)
+
 	backend, err := net.DialTimeout("tcp", "127.0.0.1:443", 5*time.Second)
 	if err != nil {
-		app.logger.Error("tailnet https dial local caddy failed", zap.Error(err))
+		app.logger.Error("tailnet https dial local caddy failed",
+			zap.Uint64("bridge_id", bridgeID),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
 		return
 	}
 	defer backend.Close()
 
-	proxyBidirectional(inbound, backend)
+	app.logger.Info("tailnet https bridge connected local caddy",
+		zap.Uint64("bridge_id", bridgeID),
+		zap.String("caddy_remote_addr", backend.RemoteAddr().String()),
+		zap.String("caddy_local_addr", backend.LocalAddr().String()),
+	)
+
+	proxyBidirectional(inbound, backend, app.logger, bridgeID)
+
+	app.logger.Info("tailnet https bridge finished",
+		zap.Uint64("bridge_id", bridgeID),
+		zap.Duration("duration", time.Since(started)),
+	)
 }
 
 type closeWriter interface {
 	CloseWrite() error
 }
 
-func proxyBidirectional(client, backend net.Conn) {
+func proxyBidirectional(client, backend net.Conn, logger *zap.Logger, bridgeID uint64) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go copyThenCloseWrite(&wg, backend, client)
-	go copyThenCloseWrite(&wg, client, backend)
+	go copyThenCloseWrite(&wg, backend, client, logger, bridgeID, "tailnet_to_caddy")
+	go copyThenCloseWrite(&wg, client, backend, logger, bridgeID, "caddy_to_tailnet")
 	wg.Wait()
 }
 
-func copyThenCloseWrite(wg *sync.WaitGroup, dst, src net.Conn) {
+func copyThenCloseWrite(wg *sync.WaitGroup, dst, src net.Conn, logger *zap.Logger, bridgeID uint64, direction string) {
 	defer wg.Done()
-	_, _ = io.Copy(dst, src)
-	closeWrite(dst)
-}
+	started := time.Now()
+	bytesCopied, copyErr := io.Copy(dst, src)
+	closeErr := closeWrite(dst)
 
-func closeWrite(conn net.Conn) {
-	if cw, ok := conn.(closeWriter); ok {
-		_ = cw.CloseWrite()
+	fields := []zap.Field{
+		zap.Uint64("bridge_id", bridgeID),
+		zap.String("direction", direction),
+		zap.Int64("bytes", bytesCopied),
+		zap.Duration("duration", time.Since(started)),
+		zap.String("src_remote_addr", src.RemoteAddr().String()),
+		zap.String("src_local_addr", src.LocalAddr().String()),
+		zap.String("dst_remote_addr", dst.RemoteAddr().String()),
+		zap.String("dst_local_addr", dst.LocalAddr().String()),
+	}
+	if copyErr != nil {
+		fields = append(fields, zap.Error(copyErr))
+	}
+	if closeErr != nil {
+		fields = append(fields, zap.NamedError("close_write_error", closeErr))
+	}
+
+	if copyErr != nil || closeErr != nil {
+		logger.Warn("tailnet https bridge copy finished with error", fields...)
 		return
 	}
-	_ = conn.SetDeadline(time.Now())
+	logger.Info("tailnet https bridge copy finished", fields...)
+}
+
+func closeWrite(conn net.Conn) error {
+	if cw, ok := conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return conn.SetDeadline(time.Now())
 }
 
 type tailnetDNSHandler struct {

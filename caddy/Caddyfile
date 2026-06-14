@@ -22,36 +22,44 @@
 # The wildcard and exact relay hostnames are declared on the caddy container's
 # own labels in docker-compose.yml. Those same wildcard labels are also the
 # relay's source of truth for which tailnet DNS zones to answer.
-
 {
-    # ------------------------------------------------------------------
-    # ACME / TLS: DNS-01 challenge via Cloudflare for the wildcard cert.
-    #
-    # Issuing *.t3.{$T3_DOMAIN} requires DNS-01 (wildcard SANs cannot use
-    # HTTP-01). CF_API_TOKEN needs Zone → DNS → Edit on the zone that owns
-    # T3_DOMAIN. This single wildcard cert covers relay.t3.*, web.t3.*, and
-    # every <repo>.t3.* host. See docs/cloudflare.md.
-    # ------------------------------------------------------------------
-    acme_dns cloudflare {$CF_API_TOKEN}
+	# Tailnet HTTPS reaches this Caddy server through the relay module's
+	# tsnet TCP bridge. Keep client-side transport simple for long-lived
+	# WebSocket RPC streams; HTTP/2 multiplexing and HTTP/3 Alt-Svc introduce
+	# extra flow-control/retry behavior that has shown up as intermittent
+	# tailnet-only socket disconnects under response-stream load.
+	servers {
+		protocols h1
+	}
 
-    # ------------------------------------------------------------------
-    # t3code_relay — registers the relay Caddy app + Docker discovery.
-    # Site blocks are provided by caddy-docker-proxy labels; this global option
-    # provides the shared runtime config.
-    # ------------------------------------------------------------------
-    t3code_relay {
-        domain_suffix      t3.{$T3_DOMAIN}
-        relay_host         relay.t3.{$T3_DOMAIN}
-        db_path            /var/lib/t3code-relay/relay.db
-        docker_host        unix:///var/run/docker.sock
-        probe_port         3773
-        tokens             {$RELAY_TOKENS}
-        shared_secret_file /run/secrets/t3relay-secret
-        tailscale_hostname {$TAILSCALE_HOSTNAME}
-        tailscale_auth_key {$TS_AUTHKEY}
-        tailscale_state_dir /var/lib/t3code-relay/tsnet
-        ssh_host_key_file /var/lib/t3code-relay/ssh_host_ed25519_key
-        ssh_allowed_user vscode
-        ssh_backend_port 2222
-    }
+	# ------------------------------------------------------------------
+	# ACME / TLS: DNS-01 challenge via Cloudflare for the wildcard cert.
+	#
+	# Issuing *.t3.{$T3_DOMAIN} requires DNS-01 (wildcard SANs cannot use
+	# HTTP-01). CF_API_TOKEN needs Zone → DNS → Edit on the zone that owns
+	# T3_DOMAIN. This single wildcard cert covers relay.t3.*, web.t3.*, and
+	# every <repo>.t3.* host. See docs/cloudflare.md.
+	# ------------------------------------------------------------------
+	acme_dns cloudflare {$CF_API_TOKEN}
+
+	# ------------------------------------------------------------------
+	# t3code_relay — registers the relay Caddy app + Docker discovery.
+	# Site blocks are provided by caddy-docker-proxy labels; this global option
+	# provides the shared runtime config.
+	# ------------------------------------------------------------------
+	t3code_relay {
+		domain_suffix t3.{$T3_DOMAIN}
+		relay_host relay.t3.{$T3_DOMAIN}
+		db_path /var/lib/t3code-relay/relay.db
+		docker_host unix:///var/run/docker.sock
+		probe_port 3773
+		tokens {$RELAY_TOKENS}
+		shared_secret_file /run/secrets/t3relay-secret
+		tailscale_hostname {$TAILSCALE_HOSTNAME}
+		tailscale_auth_key {$TS_AUTHKEY}
+		tailscale_state_dir /var/lib/t3code-relay/tsnet
+		ssh_host_key_file /var/lib/t3code-relay/ssh_host_ed25519_key
+		ssh_allowed_user vscode
+		ssh_backend_port 2222
+	}
 }
