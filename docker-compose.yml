@@ -27,6 +27,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - caddy-data:/data                                  # certs + ACME state
       - relay-db:/var/lib/t3code-relay                    # SQLite relay.db
+      # Optional mount browser root, served from https://relay.t3.${T3_DOMAIN}/mounts.
+      # Put bind mounts or named volumes under this in a local compose override.
+      - relay-mounts:/mnt/t3relay:ro
       # Shared secret, bind-mounted read-only into caddy. The same file is
       # bind-mounted into every devcontainer (see add-a-devcontainer.md).
       - ${RELAY_SECRET_FILE}:/run/secrets/t3relay-secret:ro
@@ -66,3 +69,4 @@ networks:
 volumes:
   caddy-data:
   relay-db:
+  relay-mounts:

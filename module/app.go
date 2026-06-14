@@ -53,6 +53,8 @@ type RelayApp struct {
 	SSHAllowedUser string `json:"ssh_allowed_user,omitempty"`
 	// SSHBackendPort is the port the devcontainer sshd feature listens on.
 	SSHBackendPort int `json:"ssh_backend_port,omitempty"`
+	// MountsRoot is the directory whose contents are exposed by the relay mount browser.
+	MountsRoot string `json:"mounts_root,omitempty"`
 
 	// runtime state
 	store          *Store
@@ -121,6 +123,9 @@ func (a *RelayApp) Provision(ctx caddy.Context) error {
 	}
 	if a.SSHBackendPort == 0 {
 		a.SSHBackendPort = 2222
+	}
+	if a.MountsRoot == "" {
+		a.MountsRoot = "/mnt/t3relay"
 	}
 
 	return nil
@@ -373,6 +378,11 @@ func (a *RelayApp) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("ssh_backend_port must be an integer: %v", err)
 			}
 			a.SSHBackendPort = p
+		case "mounts_root":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			a.MountsRoot = d.Val()
 		default:
 			return d.Errf("unknown t3code_relay option: %s", d.Val())
 		}

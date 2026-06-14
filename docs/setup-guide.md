@@ -131,13 +131,27 @@ This pulls the images (the first run takes a few minutes) and starts two service
 (the TLS proxy, relay, embedded tailnet node, and tailnet DNS server) and `web`
 (the browser client).
 
-Check that all three are running:
+Optional: expose local files through the relay mount browser by placing bind mounts or named
+volumes under `/mnt/t3relay` in a local compose override. For example:
+
+```yaml
+services:
+  caddy:
+    volumes:
+      - ~/notes:/mnt/t3relay/notes:ro
+```
+
+After restart, open `https://relay.t3.example.com/mounts` and enter one of your relay bearer
+tokens. The browser can render `.html`, `.markdown`, and image files, and can show source for
+non-binary files.
+
+Check that both services are running:
 
 ```bash
 docker compose ps
 ```
 
-All three services should show `running` or `Up`. Check caddy's logs to watch the wildcard
+Both services should show `running` or `Up`. Check caddy's logs to watch the wildcard
 certificate issue:
 
 ```bash

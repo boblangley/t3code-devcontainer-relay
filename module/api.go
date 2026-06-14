@@ -82,6 +82,9 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 	if r.Method == http.MethodGet && path == "/health" {
 		return writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "relay"})
 	}
+	if r.Method == http.MethodGet && (path == "/" || path == "/mounts") {
+		return a.serveMountsUI(w, r)
+	}
 
 	token := extractBearer(r.Header.Get("Authorization"))
 	bearerAuthorized := a.app.ValidateBearer(token)
@@ -97,6 +100,10 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 	}
 
 	switch {
+	case r.Method == http.MethodGet && path == "/v1/mounts/tree":
+		return a.handleMountsTree(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/mounts/file/"):
+		return a.handleMountFile(w, r)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/exposures"):
 		return a.handleListExposures(w, r, envIDFromPath(path, "/exposures"))
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/exposures"):
