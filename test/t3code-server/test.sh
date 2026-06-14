@@ -64,6 +64,12 @@ check "supervise script is installed" \
 check "supervise script is executable" \
     test -x /usr/local/share/t3code-supervise.sh
 
+check "t3relay helper is installed" \
+    test -f /usr/local/bin/t3relay
+
+check "t3relay helper is executable" \
+    test -x /usr/local/bin/t3relay
+
 check "env file is present" \
     test -f /usr/local/etc/t3code-server.env
 
@@ -115,6 +121,9 @@ check "env file contains T3CODE_RUNASUSER" \
 
 check "supervise script has valid bash syntax" \
     bash -n /usr/local/share/t3code-supervise.sh
+
+check "t3relay helper has valid bash syntax" \
+    bash -n /usr/local/bin/t3relay
 
 # ---------------------------------------------------------------------------
 # Report

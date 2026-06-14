@@ -49,7 +49,8 @@ Minimal `devcontainer.json` (no options overrides needed for standard use):
   },
   "containerEnv": {
     "DEVCONTAINER_ID": "${devcontainerId}",
-    "WORKSPACE_HOME": "${containerWorkspaceFolder}"
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}",
+    "T3RELAY_URL": "https://relay.t3.example.com"
   },
   "runArgs": [
     "--network=dev-ingress",
@@ -95,6 +96,45 @@ top-level `docker-compose.yml`).
 
 If you override `secretPath` in the feature options, update the mount `target`
 to match.
+
+### On-demand port exposure helper
+
+The feature installs `/usr/local/bin/t3relay`, a small helper for exposing
+agent-started web servers through the relay without editing Caddy config.
+
+Set `T3RELAY_URL` in `containerEnv` to your relay API URL:
+
+```jsonc
+"containerEnv": {
+  "DEVCONTAINER_ID": "${devcontainerId}",
+  "T3RELAY_URL": "https://relay.t3.example.com"
+}
+```
+
+Then, from inside the devcontainer:
+
+```bash
+t3relay expose 5173 --name vite
+```
+
+The helper registers the port with the relay using the mounted shared-secret
+file and prints the public URL:
+
+```text
+https://myrepo--vite.t3.example.com
+```
+
+Exposure hostnames use the single DNS label `<environment>--<exposure>` so the
+relay's existing `*.t3.<domain>` wildcard certificate remains valid. Exposures
+expire automatically; the default TTL is one hour and the maximum is one day.
+
+Useful commands:
+
+```bash
+t3relay expose 3000
+t3relay exposures
+t3relay unexpose vite
+```
 
 ### Persistent server state
 
@@ -164,7 +204,8 @@ entrypoint user.
    (`linux-amd64` or `linux-arm64`, glibc).
 3. Extracts it to `/usr/local/lib/t3code-server`.
 4. Installs `t3code-supervise.sh` to `/usr/local/share/t3code-supervise.sh`.
-5. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
+5. Installs the `t3relay` helper to `/usr/local/bin/t3relay`.
+6. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
    entrypoint can source them without re-parsing `devcontainer.json`.
 
 `t3code-supervise.sh` runs as the devcontainer `entrypoint` on every container

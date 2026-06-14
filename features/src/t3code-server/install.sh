@@ -179,6 +179,8 @@ info "Server installed to ${INSTALL_DIR}"
 
 SUPERVISE_SRC="${FEATURE_DIR}/t3code-supervise.sh"
 SUPERVISE_DEST="/usr/local/share/t3code-supervise.sh"
+HELPER_SRC="${FEATURE_DIR}/t3relay"
+HELPER_DEST="/usr/local/bin/t3relay"
 
 if [ ! -f "${SUPERVISE_SRC}" ]; then
     err "t3code-supervise.sh not found at expected path '${SUPERVISE_SRC}'. This is a feature packaging error."
@@ -187,6 +189,14 @@ fi
 cp "${SUPERVISE_SRC}" "${SUPERVISE_DEST}"
 chmod +x "${SUPERVISE_DEST}"
 info "Supervise script installed to ${SUPERVISE_DEST}"
+
+if [ ! -f "${HELPER_SRC}" ]; then
+    err "t3relay helper not found at expected path '${HELPER_SRC}'. This is a feature packaging error."
+fi
+
+cp "${HELPER_SRC}" "${HELPER_DEST}"
+chmod +x "${HELPER_DEST}"
+info "t3relay helper installed to ${HELPER_DEST}"
 
 # ---------------------------------------------------------------------------
 # Write the env file (sourced by the supervise script at container start)

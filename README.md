@@ -47,6 +47,7 @@ Surfaces once running:
 | `relay.t3.<domain>` | Relay API — point your T3 Code client here with a bearer token |
 | `web.t3.<domain>` | The web client (zero-install alternative) |
 | `<repo>.t3.<domain>` | Direct route to one devcontainer's server |
+| `<repo>--<name>.t3.<domain>` | On-demand route to an arbitrary port exposed from that devcontainer |
 
 ## Quick-start (you already know the tooling)
 

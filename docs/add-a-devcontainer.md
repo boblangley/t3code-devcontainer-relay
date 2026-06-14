@@ -54,7 +54,8 @@ it with any configuration you already have:
   },
   "containerEnv": {
     "DEVCONTAINER_ID": "${devcontainerId}",
-    "WORKSPACE_HOME": "${containerWorkspaceFolder}"
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}",
+    "T3RELAY_URL": "https://relay.t3.example.com"
   },
   "runArgs": [
     "--network=dev-ingress",
@@ -120,6 +121,13 @@ subdirectory name when `stateParentDir` is set.
 
 Exposes the workspace path inside the container. The feature passes this as the T3 server cwd so
 the initial project is the workspace instead of `/`.
+
+```jsonc
+"T3RELAY_URL": "https://relay.t3.example.com"
+```
+
+Lets the in-container `t3relay` helper know where to register on-demand port
+exposures. Substitute your actual relay domain.
 
 ### `runArgs`
 
@@ -262,6 +270,38 @@ curl -s https://relay.t3.example.com/v1/environments \
 
 The response will be a JSON object with an `environments` array. Your devcontainer should appear
 in the list with `"status": "running"`.
+
+## Exposing agent-started web servers
+
+When an agent starts a web server on an arbitrary port, register it from inside
+the devcontainer:
+
+```bash
+t3relay expose 5173 --name vite
+```
+
+The helper prints a URL like:
+
+```text
+https://myrepo--vite.t3.example.com
+```
+
+The hostname stays one label under `t3.example.com`, so the relay's existing
+`*.t3.example.com` wildcard certificate remains valid. If you omit `--name`,
+the port number is used:
+
+```bash
+t3relay expose 3000
+# https://myrepo--3000.t3.example.com
+```
+
+Exposures default to a one-hour TTL. Use `--ttl <seconds>` to change it, up to
+one day. To inspect or remove exposures:
+
+```bash
+t3relay exposures
+t3relay unexpose vite
+```
 
 ---
 
