@@ -26,10 +26,11 @@ A Caddy v2 module that discovers devcontainers via Docker labels, stores them in
 
 The relay serves a browser UI from `https://relay.t3.<domain>/mounts`. The UI is public HTML, but file tree and file content endpoints require a configured relay bearer token.
 
-- `GET /v1/mounts/tree` returns the file tree under `mounts_root`.
+- `GET /v1/mounts/tree` returns root metadata for `mounts_root`.
+- `GET /v1/mounts/children?path=<path>` lazily returns one directory level.
 - `GET /v1/mounts/file/<path>?mode=render|source` returns rendered content or source.
-- `.html` files render as sandboxed HTML, `.markdown` files render to HTML, and common image types render as images.
-- Non-binary files can be viewed as source with line numbers and client-side syntax highlighting.
+- `.html` files render as sandboxed HTML, `.md`/`.markdown` files render to HTML, and common image types render as images.
+- Non-binary files can be viewed as source with Prism syntax highlighting, line numbers, and linkable line numbers.
 
 ## Running tests
 

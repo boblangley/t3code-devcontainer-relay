@@ -29,6 +29,12 @@ func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `id="unlock"`) {
 		t.Fatal("expected explicit unlock control")
 	}
+	if !strings.Contains(w.Body.String(), "prism-autoloader") {
+		t.Fatal("expected Prism autoloader plugin")
+	}
+	if !strings.Contains(w.Body.String(), "linkable-line-numbers") {
+		t.Fatal("expected Prism linkable line numbers")
+	}
 }
 
 func TestAPIHandler_MountsTree_RequiresAuth(t *testing.T) {
@@ -75,17 +81,55 @@ func TestAPIHandler_MountsTree_WithAuth(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.Root.Children) != 2 {
-		t.Fatalf("children = %d, want 2", len(resp.Root.Children))
+	if len(resp.Root.Children) != 0 {
+		t.Fatalf("tree should not eagerly load children, got %d", len(resp.Root.Children))
 	}
-	if resp.Root.Children[0].Name != "nested" || resp.Root.Children[0].Type != "directory" {
-		t.Fatalf("first child = %#v, want nested directory", resp.Root.Children[0])
+	if !resp.Root.HasChildren {
+		t.Fatal("expected root to advertise lazy children")
+	}
+}
+
+func TestAPIHandler_MountsChildren_WithAuth(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "a.markdown"), "# Hello\n")
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(root, "nested", "b.txt"), "text\n")
+
+	ah, _, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+	ah.app.MountsRoot = root
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/mounts/children?path=", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Children []mountTreeEntry `json:"children"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Children) != 2 {
+		t.Fatalf("children = %d, want 2", len(resp.Children))
+	}
+	if resp.Children[0].Name != "nested" || resp.Children[0].Type != "directory" {
+		t.Fatalf("first child = %#v, want nested directory", resp.Children[0])
 	}
 }
 
 func TestAPIHandler_MountFile_RenderMarkdown(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "doc.markdown"), "# Hello\n\nBody\n")
+	mustWriteFile(t, filepath.Join(root, "short.md"), "# Short\n")
 
 	ah, _, cleanup := testAPIHandler(t, []string{"tok1"})
 	defer cleanup()
@@ -97,6 +141,11 @@ func TestAPIHandler_MountFile_RenderMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(resp.HTML, "<h1>Hello</h1>") {
 		t.Fatalf("html = %q, want heading", resp.HTML)
+	}
+
+	resp = requestMountFile(t, ah, "/v1/mounts/file/short.md?mode=render")
+	if !resp.Renderable || !strings.Contains(resp.HTML, "<h1>Short</h1>") {
+		t.Fatalf("response = %#v, want rendered .md HTML", resp)
 	}
 }
 

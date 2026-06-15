@@ -3,7 +3,6 @@ package t3relay
 import (
 	"encoding/base64"
 	"fmt"
-	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
@@ -19,11 +18,12 @@ import (
 const maxMountFileBytes = 5 * 1024 * 1024
 
 type mountTreeEntry struct {
-	Name     string           `json:"name"`
-	Path     string           `json:"path"`
-	Type     string           `json:"type"`
-	Size     int64            `json:"size,omitempty"`
-	Children []mountTreeEntry `json:"children,omitempty"`
+	Name        string           `json:"name"`
+	Path        string           `json:"path"`
+	Type        string           `json:"type"`
+	Size        int64            `json:"size,omitempty"`
+	HasChildren bool             `json:"hasChildren,omitempty"`
+	Children    []mountTreeEntry `json:"children,omitempty"`
 }
 
 type mountFileResponse struct {
@@ -48,6 +48,11 @@ var mountRenderers = map[string]mountRenderer{
 		render: func(data []byte) string { return string(data) },
 	},
 	".markdown": {
+		render: func(data []byte) string {
+			return string(blackfriday.Run(data))
+		},
+	},
+	".md": {
 		render: func(data []byte) string {
 			return string(blackfriday.Run(data))
 		},
@@ -85,7 +90,7 @@ func (a *APIHandler) handleMountsTree(w http.ResponseWriter, _ *http.Request) er
 			"_tag": "MountsError", "code": "mounts_error", "reason": "root_unreadable",
 		})
 	}
-	tree, err := mountTree(root, "")
+	tree, err := mountEntry(root, "")
 	if err != nil {
 		return writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"_tag": "MountsError", "code": "mounts_error", "reason": "tree_failed",
@@ -93,6 +98,16 @@ func (a *APIHandler) handleMountsTree(w http.ResponseWriter, _ *http.Request) er
 	}
 	tree.Name = filepath.Base(root)
 	return writeJSON(w, http.StatusOK, map[string]any{"root": tree})
+}
+
+func (a *APIHandler) handleMountsChildren(w http.ResponseWriter, r *http.Request) error {
+	children, err := mountChildren(a.app.MountsRoot, r.URL.Query().Get("path"))
+	if err != nil {
+		return writeJSON(w, http.StatusBadRequest, map[string]string{
+			"_tag": "BadRequestError", "code": "bad_request", "reason": "invalid_path",
+		})
+	}
+	return writeJSON(w, http.StatusOK, map[string]any{"children": children})
 }
 
 func (a *APIHandler) handleMountFile(w http.ResponseWriter, r *http.Request) error {
@@ -178,7 +193,7 @@ func (a *APIHandler) handleMountFile(w http.ResponseWriter, r *http.Request) err
 	return writeJSON(w, http.StatusOK, resp)
 }
 
-func mountTree(root, relativePath string) (mountTreeEntry, error) {
+func mountEntry(root, relativePath string) (mountTreeEntry, error) {
 	fullPath, cleanPath, err := safeMountPath(root, relativePath)
 	if err != nil {
 		return mountTreeEntry{}, err
@@ -192,19 +207,30 @@ func mountTree(root, relativePath string) (mountTreeEntry, error) {
 		entryType = "directory"
 	}
 	entry := mountTreeEntry{
-		Name: filepath.Base(fullPath),
-		Path: cleanPath,
-		Type: entryType,
-		Size: info.Size(),
+		Name:        filepath.Base(fullPath),
+		Path:        cleanPath,
+		Type:        entryType,
+		Size:        info.Size(),
+		HasChildren: info.IsDir() && directoryHasVisibleEntries(fullPath),
 	}
-	if !info.IsDir() {
-		return entry, nil
+	return entry, nil
+}
+
+func mountChildren(root, relativePath string) ([]mountTreeEntry, error) {
+	fullPath, _, err := safeMountPath(root, relativePath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("path is not a directory")
 	}
 
 	dirEntries, err := os.ReadDir(fullPath)
 	if err != nil {
-		return entry, nil
+		return nil, err
 	}
+
 	sort.Slice(dirEntries, func(i, j int) bool {
 		leftDir := dirEntries[i].IsDir()
 		rightDir := dirEntries[j].IsDir()
@@ -214,20 +240,35 @@ func mountTree(root, relativePath string) (mountTreeEntry, error) {
 		return strings.ToLower(dirEntries[i].Name()) < strings.ToLower(dirEntries[j].Name())
 	})
 
-	entry.Children = make([]mountTreeEntry, 0, len(dirEntries))
+	children := make([]mountTreeEntry, 0, len(dirEntries))
 	for _, dirEntry := range dirEntries {
-		childRelativePath := pathJoin(cleanPath, dirEntry.Name())
 		childInfo, err := dirEntry.Info()
-		if err != nil || childInfo.Mode()&fs.ModeSymlink != 0 {
+		if err != nil || childInfo.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		child, err := mountTree(root, childRelativePath)
+		childRelativePath := pathJoin(relativePath, dirEntry.Name())
+		child, err := mountEntry(root, childRelativePath)
 		if err != nil {
 			continue
 		}
-		entry.Children = append(entry.Children, child)
+		children = append(children, child)
 	}
-	return entry, nil
+	return children, nil
+}
+
+func directoryHasVisibleEntries(path string) bool {
+	dirEntries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, dirEntry := range dirEntries {
+		childInfo, err := dirEntry.Info()
+		if err != nil || childInfo.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func safeMountPath(root, relativePath string) (string, string, error) {
@@ -305,14 +346,23 @@ const mountsHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>T3 Relay Mounts</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/themes/prism-okaidia.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/plugins/line-numbers/prism-line-numbers.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/plugins/line-highlight/prism-line-highlight.min.css">
+<script>window.Prism={manual:true};</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/plugins/autolinker/prism-autolinker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/plugins/line-highlight/prism-line-highlight.min.js"></script>
 <style>
 :root{color-scheme:light dark;--bg:#f7f8f5;--panel:#fff;--ink:#1d2420;--muted:#66716a;--line:#d9dfd8;--accent:#176b87;--accent2:#7a3f20;--code:#101418}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}
-.shell{display:grid;grid-template-columns:minmax(220px,28vw) 6px 1fr;height:100vh;width:100vw;overflow:hidden}.shell.collapsed{grid-template-columns:0 0 1fr}.sidebar{background:var(--panel);border-right:1px solid var(--line);overflow:auto}.resizer{cursor:col-resize;background:var(--line)}.main{min-width:0;display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+.shell{display:grid;grid-template-columns:600px 6px 1fr;height:100vh;width:100vw;overflow:hidden}.shell.collapsed{grid-template-columns:0 0 1fr}.sidebar{background:var(--panel);border-right:1px solid var(--line);overflow:auto}.resizer{cursor:col-resize;background:var(--line)}.main{min-width:0;display:grid;grid-template-rows:auto 1fr;overflow:hidden}
 .side-top,.topbar{height:48px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}.side-title{font-weight:650;white-space:nowrap}.grow{flex:1}.icon{width:32px;height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);display:grid;place-items:center;cursor:pointer}.icon:hover{border-color:var(--accent);color:var(--accent)}
 .tree{padding:8px}.node{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;color:var(--ink);text-align:left;padding:5px 7px;min-height:30px;cursor:pointer}.node:hover,.node.active{background:color-mix(in srgb,var(--accent) 12%,transparent)}.twisty{width:14px;color:var(--muted)}.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fileicon{color:var(--accent2)}.diricon{color:var(--accent)}
-.breadcrumb{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted)}.crumb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.seg{display:flex;border:1px solid var(--line);height:32px}.seg button{border:0;background:var(--panel);color:var(--muted);padding:0 12px;cursor:pointer}.seg button.active{background:var(--accent);color:white}.token{width:min(340px,28vw);height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:0 10px}.unlock{height:32px;border:1px solid var(--accent);background:var(--accent);color:white;padding:0 12px;cursor:pointer}.unlock:disabled{border-color:var(--line);background:var(--line);color:var(--muted);cursor:default}.authstate{color:var(--muted);font-size:12px;white-space:nowrap}
-.content{min-width:0;overflow:auto;background:#fff}.empty,.error{padding:24px;color:var(--muted)}.render{padding:22px;max-width:960px}.render iframe{width:100%;height:calc(100vh - 88px);border:1px solid var(--line);background:white}.render img{display:block;max-width:100%;height:auto}.codewrap{display:grid;grid-template-columns:auto 1fr;align-items:start;background:var(--code);color:#e8edf0;min-height:100%;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ln{color:#7f8b94;text-align:right;padding:14px 10px 14px 16px;border-right:1px solid #2d3439;user-select:none;white-space:pre}.src{padding:14px;overflow:auto;white-space:pre}.tok-tag{color:#6ee7d8}.tok-attr{color:#f7c873}.tok-str{color:#a7d982}.tok-comment{color:#8b98a3}.tok-key{color:#8ab4ff}
+.breadcrumb{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted);cursor:text}.crumb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pathinput{width:min(760px,42vw);height:32px;border:1px solid var(--accent);background:var(--panel);color:var(--ink);padding:0 10px}.seg{display:flex;border:1px solid var(--line);height:32px}.seg button{border:0;background:var(--panel);color:var(--muted);padding:0 12px;cursor:pointer}.seg button.active{background:var(--accent);color:white}.token{width:min(340px,28vw);height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:0 10px}.unlock{height:32px;border:1px solid var(--accent);background:var(--accent);color:white;padding:0 12px;cursor:pointer}.unlock:disabled{border-color:var(--line);background:var(--line);color:var(--muted);cursor:default}.authstate{color:var(--muted);font-size:12px;white-space:nowrap}
+.content{min-width:0;overflow:auto;background:#fff}.empty,.error{padding:24px;color:var(--muted)}.render{padding:22px;max-width:960px}.render iframe{width:100%;height:calc(100vh - 88px);border:1px solid var(--line);background:white}.render img{display:block;max-width:100%;height:auto}.sourceview{min-height:100%;background:var(--code)}pre[class*="language-"].sourcepre{min-height:100vh;margin:0;border-radius:0;font-size:13px;line-height:1.55}.line-highlight{background:rgba(255,255,255,.14)}
 @media (max-width:720px){.shell{grid-template-columns:minmax(180px,76vw) 6px 1fr}.token{width:150px}.side-title{display:none}}
 </style>
 </head>
@@ -329,21 +379,28 @@ const mountsHTML = `<!doctype html>
   </main>
 </div>
 <script>
-const state={tree:null,path:null,mode:"render",open:new Set(),token:localStorage.getItem("t3relay.mounts.token")||""};
+if(window.Prism&&Prism.plugins&&Prism.plugins.autoloader){Prism.plugins.autoloader.languages_path="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/"}
+const state={tree:null,nodes:new Map(),path:null,mode:"render",open:new Set(),token:localStorage.getItem("t3relay.mounts.token")||""};
 const el=id=>document.getElementById(id);el("token").value=state.token;
 function authHeaders(){return state.token?{Authorization:"Bearer "+state.token}:{}}
 function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-function highlight(source,path){let out=escapeHtml(source);const ext=(path.split(".").pop()||"").toLowerCase();if(["html","xml","svg","markdown","md"].includes(ext)){out=out.replace(/(&lt;!--[\s\S]*?--&gt;)/g,'<span class="tok-comment">$1</span>').replace(/(&lt;\/?[\w:-]+)/g,'<span class="tok-tag">$1</span>').replace(/([\w:-]+)=(&quot;.*?&quot;|'.*?')/g,'<span class="tok-attr">$1</span>=<span class="tok-str">$2</span>')}else{out=out.replace(/\b(function|const|let|var|return|if|else|for|while|package|import|type|struct|func|case|switch|true|false|null)\b/g,'<span class="tok-key">$1</span>').replace(/(".*?"|'.*?')/g,'<span class="tok-str">$1</span>')}return out}
 async function api(path){const r=await fetch(path,{headers:authHeaders()});if(r.status===401){setAuthState("Locked");throw new Error("Invalid token.")}if(!r.ok){let msg=r.statusText;try{const e=await r.json();msg=e.reason||e.code||msg}catch{}throw new Error(msg)}setAuthState("Unlocked");return r.json()}
 function setAuthState(value){el("authstate").textContent=value;el("unlock").disabled=value==="Loading"}
 async function applyToken(){state.token=el("token").value.trim();if(!state.token){setAuthState("Locked");el("tree").innerHTML="";return}localStorage.setItem("t3relay.mounts.token",state.token);await loadTree();if(state.path)await loadFile()}
-async function loadTree(){if(!state.token){setAuthState("Locked");return}setAuthState("Loading");try{state.tree=(await api("/v1/mounts/tree")).root;renderTree();}catch(e){el("tree").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
-function renderTree(){const root=state.tree;if(!root){return}el("tree").innerHTML=nodeHtml(root,0);document.querySelectorAll("[data-path]").forEach(b=>b.onclick=()=>{const p=b.dataset.path,t=b.dataset.type;if(t==="directory"){state.open.has(p)?state.open.delete(p):state.open.add(p);renderTree()}else{selectFile(p)}})}
-function nodeHtml(n,depth){const active=n.path===state.path?" active":"";const dir=n.type==="directory";const open=n.path===""||state.open.has(n.path);let h='<button class="node'+active+'" data-type="'+n.type+'" data-path="'+escapeHtml(n.path)+'" style="padding-left:'+(7+depth*16)+'px"><span class="twisty">'+(dir?(open?"v":">"):"")+'</span><span class="'+(dir?"diricon":"fileicon")+'">'+(dir?"[]":"-")+'</span><span class="name">'+escapeHtml(n.name||"mounts")+'</span></button>';if(dir&&open&&n.children){h+=n.children.map(c=>nodeHtml(c,depth+1)).join("")}return h}
+async function loadTree(){if(!state.token){setAuthState("Locked");return}setAuthState("Loading");try{state.tree=(await api("/v1/mounts/tree")).root;state.nodes=new Map();rememberNode(state.tree);state.open=new Set([""]);await loadChildren(state.tree);renderTree();}catch(e){el("tree").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
+function rememberNode(n){state.nodes.set(n.path,n);(n.children||[]).forEach(rememberNode)}
+async function loadChildren(n){if(!n||n.type!=="directory"||n.loaded)return;n.loading=true;renderTree();const data=await api("/v1/mounts/children?path="+encodeURIComponent(n.path));n.children=data.children||[];n.loaded=true;n.loading=false;n.children.forEach(rememberNode)}
+async function toggleDirectory(path){const n=state.nodes.get(path);if(!n)return;if(state.open.has(path)){state.open.delete(path);renderTree();return}try{await loadChildren(n);state.open.add(path);renderTree()}catch(e){el("tree").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
+function renderTree(){const root=state.tree;if(!root){return}el("tree").innerHTML=nodeHtml(root,0);document.querySelectorAll("[data-path]").forEach(b=>b.onclick=()=>{const p=b.dataset.path,t=b.dataset.type;if(t==="directory")toggleDirectory(p);else selectFile(p)})}
+function nodeHtml(n,depth){const active=n.path===state.path?" active":"";const dir=n.type==="directory";const open=n.path===""||state.open.has(n.path);const twisty=dir?(n.loading?"...":open?"v":n.hasChildren?">":""):"";let h='<button class="node'+active+'" data-type="'+n.type+'" data-path="'+escapeHtml(n.path)+'" style="padding-left:'+(7+depth*16)+'px"><span class="twisty">'+twisty+'</span><span class="'+(dir?"diricon":"fileicon")+'">'+(dir?"[]":"-")+'</span><span class="name">'+escapeHtml(n.name||"mounts")+'</span></button>';if(dir&&open&&n.children){h+=n.children.map(c=>nodeHtml(c,depth+1)).join("")}return h}
 function selectFile(path){state.path=path;renderTree();loadFile()}
-async function loadFile(){if(!state.path)return;el("breadcrumb").innerHTML=state.path.split("/").map(p=>'<span class="crumb">'+escapeHtml(p)+'</span>').join("<span>/</span>");el("content").innerHTML='<div class="empty">Loading...</div>';try{const f=await api("/v1/mounts/file/"+encodeURIComponent(state.path).replaceAll("%2F","/")+"?mode="+state.mode);renderFile(f)}catch(e){el("content").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
-function renderFile(f){if(state.mode==="render"&&f.dataUrl){el("content").innerHTML='<div class="render"><img src="'+f.dataUrl+'" alt="'+escapeHtml(f.name)+'"></div>';return}if(state.mode==="render"&&f.html){el("content").innerHTML='<div class="render"><iframe sandbox srcdoc="'+escapeHtml(f.html)+'"></iframe></div>';return}const src=f.source||"";const lines=src.split("\n").map((_,i)=>i+1).join("\n");el("content").innerHTML='<div class="codewrap"><pre class="ln">'+lines+'</pre><pre class="src">'+highlight(src,f.path)+'</pre></div>'}
-el("unlock").onclick=applyToken;el("token").onkeydown=e=>{if(e.key==="Enter")applyToken()};el("token").oninput=()=>{if(!el("token").value.trim())setAuthState("Locked")};el("refresh").onclick=loadTree;el("collapse").onclick=()=>el("shell").classList.add("collapsed");el("expand").onclick=()=>el("shell").classList.remove("collapsed");
+function renderBreadcrumb(){const value=state.path||"";el("breadcrumb").innerHTML=value?value.split("/").map(p=>'<span class="crumb">'+escapeHtml(p)+'</span>').join("<span>/</span>"):'<span class="crumb">No file selected</span>'}
+function editBreadcrumb(){if(!state.path)return;el("breadcrumb").innerHTML='<input id="pathinput" class="pathinput" value="'+escapeHtml(state.path)+'">';const input=el("pathinput");input.focus();input.select();input.onblur=renderBreadcrumb;input.onkeydown=e=>{if(e.key==="Escape"||e.key==="Enter")input.blur()}}
+async function loadFile(){if(!state.path)return;renderBreadcrumb();el("content").innerHTML='<div class="empty">Loading...</div>';try{const f=await api("/v1/mounts/file/"+encodeURIComponent(state.path).replaceAll("%2F","/")+"?mode="+state.mode);renderFile(f)}catch(e){el("content").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
+function prismLanguage(path){const ext=(path.split(".").pop()||"").toLowerCase();return {cjs:"javascript",cts:"typescript",go:"go",html:"markup",htm:"markup",js:"javascript",json:"json",jsx:"jsx",markdown:"markdown",md:"markdown",mjs:"javascript",mts:"typescript",py:"python",rb:"ruby",rs:"rust",sh:"bash",svg:"markup",ts:"typescript",tsx:"tsx",txt:"none",xml:"markup",yaml:"yaml",yml:"yaml"}[ext]||ext||"none"}
+function lineHash(){const prefix="#source.";return location.hash.startsWith(prefix)?location.hash.slice(prefix.length):""}
+function renderFile(f){if(state.mode==="render"&&f.dataUrl){el("content").innerHTML='<div class="render"><img src="'+f.dataUrl+'" alt="'+escapeHtml(f.name)+'"></div>';return}if(state.mode==="render"&&f.html){el("content").innerHTML='<div class="render"><iframe sandbox srcdoc="'+escapeHtml(f.html)+'"></iframe></div>';return}const src=f.source||"";const lang=prismLanguage(f.path);const line=lineHash();el("content").innerHTML='<div class="sourceview"><pre id="source" class="sourcepre line-numbers linkable-line-numbers language-'+escapeHtml(lang)+'"'+(line?' data-line="'+escapeHtml(line)+'"':'')+'><code class="language-'+escapeHtml(lang)+'">'+escapeHtml(src)+'</code></pre></div>';const code=document.querySelector("#source code");if(window.Prism&&code)Prism.highlightElement(code)}
+el("breadcrumb").onclick=editBreadcrumb;el("unlock").onclick=applyToken;el("token").onkeydown=e=>{if(e.key==="Enter")applyToken()};el("token").oninput=()=>{if(!el("token").value.trim())setAuthState("Locked")};el("refresh").onclick=loadTree;el("collapse").onclick=()=>el("shell").classList.add("collapsed");el("expand").onclick=()=>el("shell").classList.remove("collapsed");
 el("renderMode").onclick=()=>{state.mode="render";el("renderMode").classList.add("active");el("sourceMode").classList.remove("active");loadFile()};el("sourceMode").onclick=()=>{state.mode="source";el("sourceMode").classList.add("active");el("renderMode").classList.remove("active");loadFile()};
 let dragging=false;el("resizer").onpointerdown=e=>{dragging=true;el("resizer").setPointerCapture(e.pointerId)};el("resizer").onpointermove=e=>{if(dragging&&!el("shell").classList.contains("collapsed"))el("shell").style.gridTemplateColumns=Math.max(120,e.clientX)+"px 6px 1fr"};el("resizer").onpointerup=()=>dragging=false;
 if(state.token)loadTree();
