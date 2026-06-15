@@ -26,6 +26,9 @@ func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "T3 Relay Mounts") {
 		t.Fatal("expected mounts UI HTML")
 	}
+	if !strings.Contains(w.Body.String(), `id="unlock"`) {
+		t.Fatal("expected explicit unlock control")
+	}
 }
 
 func TestAPIHandler_MountsTree_RequiresAuth(t *testing.T) {
