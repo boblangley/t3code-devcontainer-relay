@@ -35,6 +35,9 @@ func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "linkable-line-numbers") {
 		t.Fatal("expected Prism linkable line numbers")
 	}
+	if !strings.Contains(w.Body.String(), ".sourceview .token{background:transparent!important}") {
+		t.Fatal("expected Prism token background override")
+	}
 }
 
 func TestAPIHandler_MountsTree_RequiresAuth(t *testing.T) {
