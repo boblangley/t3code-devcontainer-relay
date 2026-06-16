@@ -35,8 +35,11 @@ func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "linkable-line-numbers") {
 		t.Fatal("expected Prism linkable line numbers")
 	}
-	if !strings.Contains(w.Body.String(), ".sourceview .token{background:transparent!important}") {
-		t.Fatal("expected Prism token background override")
+	if !strings.Contains(w.Body.String(), ".sourceview .token{background:transparent!important;border:0!important}") {
+		t.Fatal("expected Prism token background and border override")
+	}
+	if strings.Contains(w.Body.String(), `class="token" type="password"`) {
+		t.Fatal("bearer token input must not use Prism token class")
 	}
 }
 
