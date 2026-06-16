@@ -41,6 +41,9 @@ func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
 	if strings.Contains(w.Body.String(), `class="token" type="password"`) {
 		t.Fatal("bearer token input must not use Prism token class")
 	}
+	if strings.Contains(w.Body.String(), "tokeninput") {
+		t.Fatal("bearer token input should use scoped topbar styling, not a token-named class")
+	}
 }
 
 func TestAPIHandler_MountsTree_RequiresAuth(t *testing.T) {
