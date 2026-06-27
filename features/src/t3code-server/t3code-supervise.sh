@@ -45,6 +45,7 @@ T3CODE_BASEDIR="${T3CODE_BASEDIR:-}"
 T3CODE_STATEPARENTDIR="${T3CODE_STATEPARENTDIR:-}"
 T3CODE_WORKSPACEHOME="${T3CODE_WORKSPACEHOME:-}"
 T3CODE_RUNASUSER="${T3CODE_RUNASUSER:-vscode}"
+T3CODE_SSHAUTHSOCK="${T3CODE_SSHAUTHSOCK:-/tmp/vscode-ssh-agent.sock}"
 
 # ---------------------------------------------------------------------------
 # Env vars passed to the t3code server process
@@ -70,6 +71,10 @@ T3CODE_RUNASUSER="${T3CODE_RUNASUSER:-vscode}"
 #                              supervisor runs as the entrypoint user, then
 #                              drops privileges before starting Node when this
 #                              is set and the entrypoint user is root.
+#   SSH_AUTH_SOCK            — Stable in-container socket path for the forwarded
+#                              SSH agent. VS Code injects the real socket under
+#                              /tmp after container boot, so the supervisor keeps
+#                              this path symlinked to the newest injected socket.
 # ---------------------------------------------------------------------------
 
 SERVER_PORT="${T3CODE_PORT}"
@@ -131,6 +136,7 @@ _resolve_workspace_home() {
 SERVER_T3CODE_HOME="$(_resolve_t3code_home)"
 SERVER_WORKSPACE_HOME="$(_resolve_workspace_home)"
 SERVER_RUN_AS_USER="${T3CODE_RUNASUSER}"
+SERVER_SSH_AUTH_SOCK="${T3CODE_SSHAUTHSOCK}"
 
 _run_as_user_exists() {
     _is_non_empty "${SERVER_RUN_AS_USER}" && id "${SERVER_RUN_AS_USER}" >/dev/null 2>&1
@@ -150,12 +156,78 @@ _prepare_server_state_dir() {
     fi
 }
 
+_find_vscode_ssh_auth_sock() {
+    local candidate
+    local newest=""
+
+    for candidate in /tmp/vscode-ssh-auth-*.sock; do
+        if [ "${candidate}" = "/tmp/vscode-ssh-auth-*.sock" ]; then
+            continue
+        fi
+
+        if [ ! -S "${candidate}" ]; then
+            continue
+        fi
+
+        if [ -z "${newest}" ] || [ "${candidate}" -nt "${newest}" ]; then
+            newest="${candidate}"
+        fi
+    done
+
+    printf '%s' "${newest}"
+}
+
+_repair_ssh_auth_sock_symlink() {
+    if ! _is_non_empty "${SERVER_SSH_AUTH_SOCK}"; then
+        return 1
+    fi
+
+    local target
+    target="$(_find_vscode_ssh_auth_sock)"
+    if ! _is_non_empty "${target}"; then
+        return 1
+    fi
+
+    local parent_dir
+    parent_dir="$(dirname "${SERVER_SSH_AUTH_SOCK}")"
+    mkdir -p "${parent_dir}" 2>/dev/null || true
+
+    if [ -L "${SERVER_SSH_AUTH_SOCK}" ]; then
+        local current_target
+        current_target="$(readlink "${SERVER_SSH_AUTH_SOCK}" 2>/dev/null || true)"
+        if [ "${current_target}" = "${target}" ]; then
+            return 0
+        fi
+    elif [ -e "${SERVER_SSH_AUTH_SOCK}" ]; then
+        echo "[t3code-supervise] $(date -u +%FT%TZ) SSH_AUTH_SOCK stable path exists and is not a symlink: ${SERVER_SSH_AUTH_SOCK}" >> "${LOG_FILE}" 2>&1
+        return 1
+    fi
+
+    ln -sfn "${target}" "${SERVER_SSH_AUTH_SOCK}" 2>/dev/null || return 1
+    echo "[t3code-supervise] $(date -u +%FT%TZ) Linked SSH_AUTH_SOCK ${SERVER_SSH_AUTH_SOCK} -> ${target}" >> "${LOG_FILE}" 2>&1
+}
+
+_run_ssh_auth_sock_watcher() {
+    local interval=2
+    echo "${BASHPID}" > "${WATCHER_PID_FILE}"
+    echo "[t3code-supervise] SSH_AUTH_SOCK watcher started (PID ${BASHPID}, stablePath=${SERVER_SSH_AUTH_SOCK:-<disabled>})" >> "${LOG_FILE}" 2>&1
+
+    while true; do
+        _repair_ssh_auth_sock_symlink || true
+        sleep "${interval}"
+    done
+}
+
 _run_server_command() {
     local server_args=("$@")
     local env_args=(
         "PORT=${SERVER_PORT}"
         "T3CODE_RELAY_SECRET_FILE=${SERVER_SECRET_FILE}"
     )
+
+    if _is_non_empty "${SERVER_SSH_AUTH_SOCK}"; then
+        env_args+=("SSH_AUTH_SOCK=${SERVER_SSH_AUTH_SOCK}")
+    fi
 
     if _is_non_empty "${SERVER_T3CODE_HOME}"; then
         env_args+=("T3CODE_HOME=${SERVER_T3CODE_HOME}")
@@ -202,6 +274,7 @@ done
 # ---------------------------------------------------------------------------
 
 PID_FILE="/tmp/t3code-server.pid"
+WATCHER_PID_FILE="/tmp/t3code-ssh-auth-sock-watcher.pid"
 LOG_FILE="/tmp/t3code-server.log"
 
 _supervisor_already_running() {
@@ -210,6 +283,17 @@ _supervisor_already_running() {
         stored_pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
         if [ -n "${stored_pid}" ] && kill -0 "${stored_pid}" 2>/dev/null; then
             return 0  # still alive
+        fi
+    fi
+    return 1
+}
+
+_watcher_already_running() {
+    if [ -f "${WATCHER_PID_FILE}" ]; then
+        local stored_pid
+        stored_pid="$(cat "${WATCHER_PID_FILE}" 2>/dev/null || true)"
+        if [ -n "${stored_pid}" ] && kill -0 "${stored_pid}" 2>/dev/null; then
+            return 0
         fi
     fi
     return 1
@@ -229,7 +313,7 @@ _run_supervisor() {
     local backoff=1
     local max_backoff=30
 
-    echo "[t3code-supervise] Supervisor started (PID ${BASHPID}, port=${SERVER_PORT}, secretPath=${SERVER_SECRET_FILE}, t3codeHome=${SERVER_T3CODE_HOME:-<server-default>}, workspaceHome=${SERVER_WORKSPACE_HOME:-<server-default>}, runAsUser=${SERVER_RUN_AS_USER:-<entrypoint-user>})" >> "${LOG_FILE}" 2>&1
+    echo "[t3code-supervise] Supervisor started (PID ${BASHPID}, port=${SERVER_PORT}, secretPath=${SERVER_SECRET_FILE}, t3codeHome=${SERVER_T3CODE_HOME:-<server-default>}, workspaceHome=${SERVER_WORKSPACE_HOME:-<server-default>}, runAsUser=${SERVER_RUN_AS_USER:-<entrypoint-user>}, sshAuthSock=${SERVER_SSH_AUTH_SOCK:-<disabled>})" >> "${LOG_FILE}" 2>&1
 
     while true; do
         if [ -z "${SERVER_ENTRYPOINT}" ]; then
@@ -267,8 +351,17 @@ _run_supervisor() {
 }
 
 # ---------------------------------------------------------------------------
-# Main: start supervisor in background, then exec the container command
+# Main: start support loops in background, then exec the container command
 # ---------------------------------------------------------------------------
+
+if _is_non_empty "${SERVER_SSH_AUTH_SOCK}"; then
+    if _watcher_already_running; then
+        echo "[t3code-supervise] SSH_AUTH_SOCK watcher is already running (PID $(cat "${WATCHER_PID_FILE}" 2>/dev/null)). Skipping start." >&2
+    else
+        ( _run_ssh_auth_sock_watcher ) &
+        echo "[t3code-supervise] SSH_AUTH_SOCK watcher launched in background." >&2
+    fi
+fi
 
 if _supervisor_already_running; then
     echo "[t3code-supervise] Supervisor is already running (PID $(cat "${PID_FILE}" 2>/dev/null)). Skipping start." >&2

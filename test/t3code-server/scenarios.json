@@ -18,7 +18,8 @@
           "secretPath": "/run/t3code/my-secret",
           "stateParentDir": "/mnt/t3code-state",
           "workspaceHome": "/workspaces/example",
-          "runAsUser": "vscode"
+          "runAsUser": "vscode",
+          "sshAuthSock": "/tmp/custom-vscode-ssh-agent.sock"
         }
       }
     }

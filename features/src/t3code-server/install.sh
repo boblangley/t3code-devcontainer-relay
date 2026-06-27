@@ -10,6 +10,7 @@
 #   STATEPARENTDIR — durable parent for per-devcontainer T3CODE_HOME, default ""
 #   WORKSPACEHOME  — explicit server cwd override, default ""
 #   RUNASUSER      — runtime user for the server process, default "vscode"
+#   SSHAUTHSOCK    — stable SSH agent socket path exposed to the server process
 #
 # Supported base image: mcr.microsoft.com/devcontainers/base:noble ONLY.
 # This script assumes Ubuntu 24.04 (glibc, apt, bash) and will fail fast
@@ -34,6 +35,7 @@ FEATURE_BASEDIR="${BASEDIR:-}"
 FEATURE_STATEPARENTDIR="${STATEPARENTDIR:-}"
 FEATURE_WORKSPACEHOME="${WORKSPACEHOME:-}"
 FEATURE_RUNASUSER="${RUNASUSER:-vscode}"
+FEATURE_SSHAUTHSOCK="${SSHAUTHSOCK:-/tmp/vscode-ssh-agent.sock}"
 
 # ---------------------------------------------------------------------------
 # Guard 1: Ubuntu noble (24.04) only
@@ -74,6 +76,7 @@ BASEDIR="${FEATURE_BASEDIR}"
 STATEPARENTDIR="${FEATURE_STATEPARENTDIR}"
 WORKSPACEHOME="${FEATURE_WORKSPACEHOME}"
 RUNASUSER="${FEATURE_RUNASUSER}"
+SSHAUTHSOCK="${FEATURE_SSHAUTHSOCK}"
 
 info "Installing t3code-server version='${VERSION}' port='${PORT}' secretPath='${SECRETPATH}'"
 if [ -n "${BASEDIR}" ]; then
@@ -86,6 +89,9 @@ if [ -n "${WORKSPACEHOME}" ]; then
 fi
 if [ -n "${RUNASUSER}" ]; then
     info "Server process will run as user '${RUNASUSER}' when possible"
+fi
+if [ -n "${SSHAUTHSOCK}" ]; then
+    info "Server process will use stable SSH_AUTH_SOCK='${SSHAUTHSOCK}'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -219,6 +225,7 @@ T3CODE_BASEDIR="${BASEDIR}"
 T3CODE_STATEPARENTDIR="${STATEPARENTDIR}"
 T3CODE_WORKSPACEHOME="${WORKSPACEHOME}"
 T3CODE_RUNASUSER="${RUNASUSER}"
+T3CODE_SSHAUTHSOCK="${SSHAUTHSOCK}"
 EOF
 
 chmod 644 /usr/local/etc/t3code-server.env

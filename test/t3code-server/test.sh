@@ -99,6 +99,9 @@ check "env file contains T3CODE_WORKSPACEHOME" \
 check "env file contains T3CODE_RUNASUSER" \
     grep -q "T3CODE_RUNASUSER" /usr/local/etc/t3code-server.env
 
+check "env file contains T3CODE_SSHAUTHSOCK" \
+    grep -q "T3CODE_SSHAUTHSOCK" /usr/local/etc/t3code-server.env
+
 # ---------------------------------------------------------------------------
 # 4. Install directory (populated only when the artifact was successfully
 #    downloaded; skipped here because no release exists in CI until
@@ -121,6 +124,12 @@ check "env file contains T3CODE_RUNASUSER" \
 
 check "supervise script has valid bash syntax" \
     bash -n /usr/local/share/t3code-supervise.sh
+
+check "supervise script exports SSH_AUTH_SOCK" \
+    grep -q "SSH_AUTH_SOCK" /usr/local/share/t3code-supervise.sh
+
+check "supervise script watches VS Code SSH agent socket" \
+    grep -q "vscode-ssh-auth-.*\\.sock" /usr/local/share/t3code-supervise.sh
 
 check "t3relay helper has valid bash syntax" \
     bash -n /usr/local/bin/t3relay

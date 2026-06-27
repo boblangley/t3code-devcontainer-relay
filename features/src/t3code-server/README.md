@@ -35,6 +35,7 @@ dependency has been resolved, which should never happen in normal usage.
 | `stateParentDir` | string | empty | Durable parent directory for T3 server state. When set, the feature uses `<stateParentDir>/<DEVCONTAINER_ID-or-HOSTNAME>` as `T3CODE_HOME`. |
 | `workspaceHome` | string | empty | Workspace cwd passed to the server. Leave empty to use the `WORKSPACE_HOME` container environment variable when present. |
 | `runAsUser` | string | `vscode` | Linux user that runs the T3 server process. Set to empty to run as the entrypoint user. |
+| `sshAuthSock` | string | `/tmp/vscode-ssh-agent.sock` | Stable SSH agent socket path exported to the T3 server. The supervisor keeps it linked to VS Code's forwarded socket under `/tmp`. |
 
 ## Usage
 
@@ -194,6 +195,26 @@ Override `runAsUser` if your image uses a different remote user. Set it to an
 empty string only when you intentionally want the server process to run as the
 entrypoint user.
 
+### SSH agent forwarding
+
+VS Code injects its forwarded SSH agent socket into the container after early
+devcontainer feature entrypoints have already started. That socket usually
+appears under `/tmp` as `vscode-ssh-auth-*.sock`, so the T3 server cannot rely
+on inheriting the final `SSH_AUTH_SOCK` value from the entrypoint environment.
+
+By default this feature exports:
+
+```text
+SSH_AUTH_SOCK=/tmp/vscode-ssh-agent.sock
+```
+
+to the T3 server process. A small watcher launched by the supervisor keeps that
+stable path symlinked to the newest real VS Code socket when it appears. T3
+server children, including terminals and MCP processes, inherit the stable path
+before they start, while the symlink target can be repaired later.
+
+Override `sshAuthSock` only if another process already owns the default path.
+
 ## How it works
 
 `install.sh` runs during the container image build:
@@ -216,12 +237,14 @@ start:
    running (e.g. after a `docker restart` without a rebuild) it skips re-launch.
 3. Resolves `T3CODE_HOME` from `baseDir`, `stateParentDir`, existing
    `T3CODE_HOME`, or the upstream server default.
-4. Resolves the server cwd from `workspaceHome`, `WORKSPACE_HOME`, or the
+4. Starts an SSH agent socket watcher that links `sshAuthSock` to the newest
+   `/tmp/vscode-ssh-auth-*.sock` socket when VS Code creates one.
+5. Resolves the server cwd from `workspaceHome`, `WORKSPACE_HOME`, or the
    upstream server default.
-5. Starts a restart-loop supervisor in a background subshell: runs the Node
+6. Starts a restart-loop supervisor in a background subshell: runs the Node
    server as `runAsUser` when possible, logs to `/tmp/t3code-server.log`, backs
    off exponentially (1 → 2 → 4 … → 30 s cap) on repeated crashes.
-6. `exec "$@"` to hand off to the container's own command (or `sleep infinity`
+7. `exec "$@"` to hand off to the container's own command (or `sleep infinity`
    if none is provided), keeping the container alive.
 
 ### Server environment variables
