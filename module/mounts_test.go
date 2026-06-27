@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	containertypes "github.com/moby/moby/api/types/container"
 )
 
 func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
@@ -34,6 +36,18 @@ func TestAPIHandler_MountsUI_NoAuth(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "linkable-line-numbers") {
 		t.Fatal("expected Prism linkable line numbers")
+	}
+	if !strings.Contains(w.Body.String(), "data-refresh-path") {
+		t.Fatal("expected per-folder refresh controls")
+	}
+	if !strings.Contains(w.Body.String(), "refreshDirectory") {
+		t.Fatal("expected path-scoped folder refresh handler")
+	}
+	if !strings.Contains(w.Body.String(), `id="pathContext"`) {
+		t.Fatal("expected contextual devcontainer path control")
+	}
+	if !strings.Contains(w.Body.String(), "/v1/mounts/resolve?path=") {
+		t.Fatal("expected contextual path resolver call")
 	}
 	if !strings.Contains(w.Body.String(), ".sourceview .token{background:transparent!important;border:0!important}") {
 		t.Fatal("expected Prism token background and border override")
@@ -132,6 +146,75 @@ func TestAPIHandler_MountsChildren_WithAuth(t *testing.T) {
 	}
 	if resp.Children[0].Name != "nested" || resp.Children[0].Type != "directory" {
 		t.Fatalf("first child = %#v, want nested directory", resp.Children[0])
+	}
+}
+
+func TestMountPathContext_MapsRelayBindPathToDevcontainerPath(t *testing.T) {
+	sourcePath, ok := mountedSourcePath(
+		[]containertypes.MountPoint{
+			{
+				Source:      "/home/tinomen/Code",
+				Destination: "/mnt/t3relay/Code",
+			},
+		},
+		"/mnt/t3relay/Code/boblangley/t3code-devcontainer-relay/module/mounts.go",
+	)
+	if !ok {
+		t.Fatal("expected relay source path")
+	}
+	if sourcePath != "/home/tinomen/Code/boblangley/t3code-devcontainer-relay/module/mounts.go" {
+		t.Fatalf("sourcePath = %q", sourcePath)
+	}
+
+	containerPath, writable, ok := containerPathForMountedSource(
+		[]containertypes.MountPoint{
+			{
+				Source:      "/home/tinomen/Code/boblangley/t3code-devcontainer-relay",
+				Destination: "/workspaces/t3code-devcontainer-relay",
+				RW:          true,
+			},
+		},
+		sourcePath,
+	)
+	if !ok {
+		t.Fatal("expected devcontainer path")
+	}
+	if !writable {
+		t.Fatal("expected writable devcontainer mount")
+	}
+	if containerPath != "/workspaces/t3code-devcontainer-relay/module/mounts.go" {
+		t.Fatalf("containerPath = %q", containerPath)
+	}
+}
+
+func TestMountPathContext_MapsSharedDockerVolumePath(t *testing.T) {
+	sourcePath, ok := mountedSourcePath(
+		[]containertypes.MountPoint{
+			{
+				Source:      "/var/lib/docker/volumes/t3code-devcontainer-relay-memory/_data",
+				Destination: "/mnt/t3relay/memory/t3code-devcontainer-relay",
+			},
+		},
+		"/mnt/t3relay/memory/t3code-devcontainer-relay/notes/session.md",
+	)
+	if !ok {
+		t.Fatal("expected relay volume source path")
+	}
+
+	containerPath, _, ok := containerPathForMountedSource(
+		[]containertypes.MountPoint{
+			{
+				Source:      "/var/lib/docker/volumes/t3code-devcontainer-relay-memory/_data",
+				Destination: "/memory",
+			},
+		},
+		sourcePath,
+	)
+	if !ok {
+		t.Fatal("expected devcontainer volume path")
+	}
+	if containerPath != "/memory/notes/session.md" {
+		t.Fatalf("containerPath = %q", containerPath)
 	}
 }
 

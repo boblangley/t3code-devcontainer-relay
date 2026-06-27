@@ -1,17 +1,21 @@
 package t3relay
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
+	containertypes "github.com/moby/moby/api/types/container"
+	dockerclient "github.com/moby/moby/client"
 	"github.com/russross/blackfriday/v2"
 )
 
@@ -37,6 +41,21 @@ type mountFileResponse struct {
 	Source     string `json:"source,omitempty"`
 	HTML       string `json:"html,omitempty"`
 	DataURL    string `json:"dataUrl,omitempty"`
+}
+
+type mountPathContextResponse struct {
+	Path               string                  `json:"path"`
+	RelayContainerPath string                  `json:"relayContainerPath"`
+	Matches            []mountPathContextMatch `json:"matches"`
+}
+
+type mountPathContextMatch struct {
+	EnvironmentID string `json:"environmentId"`
+	Label         string `json:"label"`
+	Hostname      string `json:"hostname"`
+	ContainerID   string `json:"containerId"`
+	Path          string `json:"path"`
+	Writable      bool   `json:"writable"`
 }
 
 type mountRenderer struct {
@@ -108,6 +127,101 @@ func (a *APIHandler) handleMountsChildren(w http.ResponseWriter, r *http.Request
 		})
 	}
 	return writeJSON(w, http.StatusOK, map[string]any{"children": children})
+}
+
+func (a *APIHandler) handleResolveMountPath(w http.ResponseWriter, r *http.Request) error {
+	_, cleanPath, err := safeMountPath(a.app.MountsRoot, r.URL.Query().Get("path"))
+	if err != nil {
+		return writeJSON(w, http.StatusBadRequest, map[string]string{
+			"_tag": "BadRequestError", "code": "bad_request", "reason": "invalid_path",
+		})
+	}
+
+	response, err := a.resolveMountPathContext(r.Context(), cleanPath)
+	if err != nil {
+		return writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"_tag": "MountsError", "code": "mounts_error", "reason": "path_context_failed",
+		})
+	}
+	return writeJSON(w, http.StatusOK, response)
+}
+
+func (a *APIHandler) resolveMountPathContext(ctx context.Context, cleanPath string) (mountPathContextResponse, error) {
+	relayContainerPath := mountContainerPath(a.app.MountsRoot, cleanPath)
+	response := mountPathContextResponse{
+		Path:               cleanPath,
+		RelayContainerPath: relayContainerPath,
+		Matches:            []mountPathContextMatch{},
+	}
+	if a.app.docker == nil || a.app.store == nil {
+		return response, nil
+	}
+
+	relayInspect, err := a.inspectRelayContainer(ctx, relayContainerPath)
+	if err != nil {
+		return response, err
+	}
+
+	sourcePath, ok := mountedSourcePath(relayInspect.Mounts, relayContainerPath)
+	if !ok {
+		return response, nil
+	}
+
+	for _, env := range a.app.store.List() {
+		if env.Status == "stopped" || env.ContainerID == "" {
+			continue
+		}
+		inspect, err := a.app.docker.ContainerInspect(ctx, env.ContainerID, dockerclient.ContainerInspectOptions{})
+		if err != nil {
+			continue
+		}
+		containerPath, writable, ok := containerPathForMountedSource(inspect.Container.Mounts, sourcePath)
+		if !ok {
+			continue
+		}
+		response.Matches = append(response.Matches, mountPathContextMatch{
+			EnvironmentID: relayEnvironmentID(env),
+			Label:         relayEnvironmentLabel(env),
+			Hostname:      env.Hostname,
+			ContainerID:   env.ContainerID,
+			Path:          containerPath,
+			Writable:      writable,
+		})
+	}
+
+	sort.Slice(response.Matches, func(i, j int) bool {
+		if response.Matches[i].Label != response.Matches[j].Label {
+			return response.Matches[i].Label < response.Matches[j].Label
+		}
+		return response.Matches[i].Path < response.Matches[j].Path
+	})
+	return response, nil
+}
+
+func (a *APIHandler) inspectRelayContainer(ctx context.Context, relayContainerPath string) (containertypes.InspectResponse, error) {
+	if relayHostname, err := os.Hostname(); err == nil && relayHostname != "" {
+		inspect, err := a.app.docker.ContainerInspect(ctx, relayHostname, dockerclient.ContainerInspectOptions{})
+		if err == nil {
+			if _, ok := bestMountByDestination(inspect.Container.Mounts, relayContainerPath); ok {
+				return inspect.Container, nil
+			}
+		}
+	}
+
+	containers, err := a.app.docker.ContainerList(ctx, dockerclient.ContainerListOptions{})
+	if err != nil {
+		return containertypes.InspectResponse{}, err
+	}
+	for _, container := range containers.Items {
+		inspect, err := a.app.docker.ContainerInspect(ctx, container.ID, dockerclient.ContainerInspectOptions{})
+		if err != nil {
+			continue
+		}
+		if _, ok := bestMountByDestination(inspect.Container.Mounts, relayContainerPath); ok {
+			return inspect.Container, nil
+		}
+	}
+	return containertypes.InspectResponse{}, fmt.Errorf("relay container mount not found for %s", relayContainerPath)
 }
 
 func (a *APIHandler) handleMountFile(w http.ResponseWriter, r *http.Request) error {
@@ -307,6 +421,95 @@ func pathJoin(left, right string) string {
 	return left + "/" + right
 }
 
+func mountContainerPath(root, cleanPath string) string {
+	root = cleanContainerPath(root)
+	if cleanPath == "" {
+		return root
+	}
+	return pathpkg.Join(root, filepath.ToSlash(cleanPath))
+}
+
+func mountedSourcePath(mounts []containertypes.MountPoint, containerPath string) (string, bool) {
+	mount, ok := bestMountByDestination(mounts, containerPath)
+	if !ok || strings.TrimSpace(mount.Source) == "" {
+		return "", false
+	}
+	relative := relativeContainerPath(mount.Destination, containerPath)
+	if relative == "" {
+		return cleanContainerPath(mount.Source), true
+	}
+	return pathpkg.Join(cleanContainerPath(mount.Source), relative), true
+}
+
+func containerPathForMountedSource(mounts []containertypes.MountPoint, sourcePath string) (string, bool, bool) {
+	mount, ok := bestMountBySource(mounts, sourcePath)
+	if !ok {
+		return "", false, false
+	}
+	relative := relativeContainerPath(mount.Source, sourcePath)
+	if relative == "" {
+		return cleanContainerPath(mount.Destination), mount.RW, true
+	}
+	return pathpkg.Join(cleanContainerPath(mount.Destination), relative), mount.RW, true
+}
+
+func bestMountByDestination(mounts []containertypes.MountPoint, containerPath string) (containertypes.MountPoint, bool) {
+	containerPath = cleanContainerPath(containerPath)
+	var best containertypes.MountPoint
+	bestLen := -1
+	for _, mount := range mounts {
+		destination := cleanContainerPath(mount.Destination)
+		if !pathHasPrefix(containerPath, destination) {
+			continue
+		}
+		if len(destination) > bestLen {
+			best = mount
+			bestLen = len(destination)
+		}
+	}
+	return best, bestLen >= 0
+}
+
+func bestMountBySource(mounts []containertypes.MountPoint, sourcePath string) (containertypes.MountPoint, bool) {
+	sourcePath = cleanContainerPath(sourcePath)
+	var best containertypes.MountPoint
+	bestLen := -1
+	for _, mount := range mounts {
+		source := cleanContainerPath(mount.Source)
+		if source == "." || !pathHasPrefix(sourcePath, source) {
+			continue
+		}
+		if len(source) > bestLen {
+			best = mount
+			bestLen = len(source)
+		}
+	}
+	return best, bestLen >= 0
+}
+
+func relativeContainerPath(base, target string) string {
+	base = cleanContainerPath(base)
+	target = cleanContainerPath(target)
+	if target == base {
+		return ""
+	}
+	return strings.TrimPrefix(target, strings.TrimRight(base, "/")+"/")
+}
+
+func cleanContainerPath(value string) string {
+	value = strings.TrimSpace(filepath.ToSlash(value))
+	if value == "" {
+		return "."
+	}
+	return pathpkg.Clean(value)
+}
+
+func pathHasPrefix(target, prefix string) bool {
+	target = cleanContainerPath(target)
+	prefix = cleanContainerPath(prefix)
+	return target == prefix || strings.HasPrefix(target, strings.TrimRight(prefix, "/")+"/")
+}
+
 func mountMimeType(ext string, data []byte) string {
 	if mimeType := mime.TypeByExtension(ext); mimeType != "" {
 		return mimeType
@@ -360,8 +563,8 @@ const mountsHTML = `<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}
 .shell{display:grid;grid-template-columns:600px 6px 1fr;height:100vh;width:100vw;overflow:hidden}.shell.collapsed{grid-template-columns:0 0 1fr}.sidebar{background:var(--panel);border-right:1px solid var(--line);overflow:auto}.resizer{cursor:col-resize;background:var(--line)}.main{min-width:0;display:grid;grid-template-rows:auto 1fr;overflow:hidden}
 .side-top,.topbar{height:48px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}.side-title{font-weight:650;white-space:nowrap}.grow{flex:1}.icon{width:32px;height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);display:grid;place-items:center;cursor:pointer}.icon:hover{border-color:var(--accent);color:var(--accent)}
-.tree{padding:8px}.node{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;color:var(--ink);text-align:left;padding:5px 7px;min-height:30px;cursor:pointer}.node:hover,.node.active{background:color-mix(in srgb,var(--accent) 12%,transparent)}.twisty{width:14px;color:var(--muted)}.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fileicon{color:var(--accent2)}.diricon{color:var(--accent)}
-.breadcrumb{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted);cursor:text}.crumb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pathinput{width:min(760px,42vw);height:32px;border:1px solid var(--accent);background:var(--panel);color:var(--ink);padding:0 10px}.seg{display:flex;border:1px solid var(--line);height:32px}.seg button{border:0;background:var(--panel);color:var(--muted);padding:0 12px;cursor:pointer}.seg button.active{background:var(--accent);color:white}.topbar input[type="password"]{width:min(340px,28vw);height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:0 10px}.unlock{height:32px;border:1px solid var(--accent);background:var(--accent);color:white;padding:0 12px;cursor:pointer}.unlock:disabled{border-color:var(--line);background:var(--line);color:var(--muted);cursor:default}.authstate{color:var(--muted);font-size:12px;white-space:nowrap}
+.tree{padding:8px}.node-row{display:flex;align-items:center;min-height:30px}.node{display:flex;align-items:center;gap:7px;min-width:0;flex:1;border:0;background:transparent;color:var(--ink);text-align:left;padding:5px 7px;min-height:30px;cursor:pointer}.node:hover,.node.active,.node-row:focus-within .node{background:color-mix(in srgb,var(--accent) 12%,transparent)}.node-refresh{width:28px;height:28px;display:grid;place-items:center;border:0;background:transparent;color:var(--muted);opacity:0;cursor:pointer}.node-row:hover .node-refresh,.node-refresh:focus-visible{opacity:1}.node-refresh:hover{color:var(--accent)}.node-refresh.loading{opacity:1;animation:spin .9s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.twisty{width:14px;color:var(--muted)}.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fileicon{color:var(--accent2)}.diricon{color:var(--accent)}
+.breadcrumb{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted);cursor:text}.crumb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pathinput{width:min(760px,42vw);height:32px;border:1px solid var(--accent);background:var(--panel);color:var(--ink);padding:0 10px}.pathwrap{position:relative;display:flex}.pathbutton{height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:0 10px;cursor:pointer}.pathbutton:disabled{color:var(--muted);cursor:default}.pathmenu{position:absolute;right:0;top:38px;z-index:20;width:min(520px,86vw);max-height:min(460px,70vh);overflow:auto;border:1px solid var(--line);background:var(--panel);box-shadow:0 16px 48px rgba(0,0,0,.18);padding:8px}.pathitem{width:100%;border:0;background:transparent;color:var(--ink);display:block;text-align:left;padding:8px;cursor:pointer}.pathitem:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}.pathlabel{display:block;font-size:12px;color:var(--muted)}.pathvalue{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.seg{display:flex;border:1px solid var(--line);height:32px}.seg button{border:0;background:var(--panel);color:var(--muted);padding:0 12px;cursor:pointer}.seg button.active{background:var(--accent);color:white}.topbar input[type="password"]{width:min(340px,28vw);height:32px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:0 10px}.unlock{height:32px;border:1px solid var(--accent);background:var(--accent);color:white;padding:0 12px;cursor:pointer}.unlock:disabled{border-color:var(--line);background:var(--line);color:var(--muted);cursor:default}.authstate{color:var(--muted);font-size:12px;white-space:nowrap}
 .content{min-width:0;overflow:auto;background:#fff}.empty,.error{padding:24px;color:var(--muted)}.render{padding:22px}.render iframe{width:100%;height:calc(100vh - 88px);border:1px solid var(--line);background:white}.render img{display:block;max-width:100%;height:auto}.sourceview{min-height:100%;background:var(--code)}.sourceview pre[class*="language-"].sourcepre,.sourceview code[class*="language-"]{background:var(--code)!important;text-shadow:none}.sourceview .token{background:transparent!important;border:0!important}.sourceview a{color:inherit;text-decoration:underline;text-decoration-color:rgba(255,255,255,.35)}pre[class*="language-"].sourcepre{min-height:100vh;margin:0;border-radius:0;font-size:13px;line-height:1.55}.line-highlight{background:rgba(255,255,255,.14)}
 @media (max-width:720px){.shell{grid-template-columns:minmax(180px,76vw) 6px 1fr}.topbar input[type="password"]{width:150px}.side-title{display:none}}
 </style>
@@ -374,13 +577,13 @@ const mountsHTML = `<!doctype html>
   </aside>
   <div id="resizer" class="resizer"></div>
   <main class="main">
-    <div class="topbar"><button class="icon" id="expand" title="Show sidebar">&#9776;</button><div id="breadcrumb" class="breadcrumb"><span class="crumb">No file selected</span></div><div class="grow"></div><span id="authstate" class="authstate">Locked</span><input id="token" type="password" autocomplete="off" placeholder="Bearer token"><button id="unlock" class="unlock">Unlock</button><div class="seg"><button id="renderMode" class="active">Render</button><button id="sourceMode">Source</button></div></div>
+    <div class="topbar"><button class="icon" id="expand" title="Show sidebar">&#9776;</button><div id="breadcrumb" class="breadcrumb"><span class="crumb">No file selected</span></div><div class="grow"></div><div class="pathwrap"><button id="pathContext" class="pathbutton" disabled>Paths</button><div id="pathmenu" class="pathmenu" hidden></div></div><span id="authstate" class="authstate">Locked</span><input id="token" type="password" autocomplete="off" placeholder="Bearer token"><button id="unlock" class="unlock">Unlock</button><div class="seg"><button id="renderMode" class="active">Render</button><button id="sourceMode">Source</button></div></div>
     <section id="content" class="content"><div class="empty">Select a file from the mounted filesystem.</div></section>
   </main>
 </div>
 <script>
 if(window.Prism&&Prism.plugins&&Prism.plugins.autoloader){Prism.plugins.autoloader.languages_path="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/"}
-const state={tree:null,nodes:new Map(),path:null,mode:"render",open:new Set(),token:localStorage.getItem("t3relay.mounts.token")||""};
+const state={tree:null,nodes:new Map(),path:null,mode:"render",open:new Set(),token:localStorage.getItem("t3relay.mounts.token")||"",pathContext:null};
 const el=id=>document.getElementById(id);el("token").value=state.token;
 function authHeaders(){return state.token?{Authorization:"Bearer "+state.token}:{}}
 function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
@@ -389,18 +592,21 @@ function setAuthState(value){el("authstate").textContent=value;el("unlock").disa
 async function applyToken(){state.token=el("token").value.trim();if(!state.token){setAuthState("Locked");el("tree").innerHTML="";return}localStorage.setItem("t3relay.mounts.token",state.token);await loadTree();if(state.path)await loadFile()}
 async function loadTree(){if(!state.token){setAuthState("Locked");return}setAuthState("Loading");try{state.tree=(await api("/v1/mounts/tree")).root;state.nodes=new Map();rememberNode(state.tree);state.open=new Set([""]);await loadChildren(state.tree);renderTree();}catch(e){el("tree").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
 function rememberNode(n){state.nodes.set(n.path,n);(n.children||[]).forEach(rememberNode)}
-async function loadChildren(n){if(!n||n.type!=="directory"||n.loaded)return;n.loading=true;renderTree();const data=await api("/v1/mounts/children?path="+encodeURIComponent(n.path));n.children=data.children||[];n.loaded=true;n.loading=false;n.children.forEach(rememberNode)}
+async function loadChildren(n,force){if(!n||n.type!=="directory"||(n.loaded&&!force))return;n.loading=true;renderTree();try{const data=await api("/v1/mounts/children?path="+encodeURIComponent(n.path));n.children=data.children||[];n.hasChildren=n.children.length>0;n.loaded=true;n.children.forEach(rememberNode)}finally{n.loading=false}}
 async function toggleDirectory(path){const n=state.nodes.get(path);if(!n)return;if(state.open.has(path)){state.open.delete(path);renderTree();return}try{await loadChildren(n);state.open.add(path);renderTree()}catch(e){el("tree").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
-function renderTree(){const root=state.tree;if(!root){return}el("tree").innerHTML=nodeHtml(root,0);document.querySelectorAll("[data-path]").forEach(b=>b.onclick=()=>{const p=b.dataset.path,t=b.dataset.type;if(t==="directory")toggleDirectory(p);else selectFile(p)})}
-function nodeHtml(n,depth){const active=n.path===state.path?" active":"";const dir=n.type==="directory";const open=n.path===""||state.open.has(n.path);const twisty=dir?(n.loading?"...":open?"v":n.hasChildren?">":""):"";let h='<button class="node'+active+'" data-type="'+n.type+'" data-path="'+escapeHtml(n.path)+'" style="padding-left:'+(7+depth*16)+'px"><span class="twisty">'+twisty+'</span><span class="'+(dir?"diricon":"fileicon")+'">'+(dir?"[]":"-")+'</span><span class="name">'+escapeHtml(n.name||"mounts")+'</span></button>';if(dir&&open&&n.children){h+=n.children.map(c=>nodeHtml(c,depth+1)).join("")}return h}
+async function refreshDirectory(path){const n=state.nodes.get(path);if(!n||n.type!=="directory")return;try{await loadChildren(n,true);state.open.add(path);renderTree()}catch(e){el("tree").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
+function renderTree(){const root=state.tree;if(!root){return}el("tree").innerHTML=nodeHtml(root,0);document.querySelectorAll(".node[data-path]").forEach(b=>b.onclick=()=>{const p=b.dataset.path,t=b.dataset.type;if(t==="directory")toggleDirectory(p);else selectFile(p)});document.querySelectorAll(".node-refresh[data-refresh-path]").forEach(b=>b.onclick=e=>{e.stopPropagation();refreshDirectory(b.dataset.refreshPath)})}
+function nodeHtml(n,depth){const active=n.path===state.path?" active":"";const dir=n.type==="directory";const open=n.path===""||state.open.has(n.path);const twisty=dir?(n.loading?"...":open?"v":n.hasChildren?">":""):"";let h='<div class="node-row"><button class="node'+active+'" data-type="'+n.type+'" data-path="'+escapeHtml(n.path)+'" style="padding-left:'+(7+depth*16)+'px"><span class="twisty">'+twisty+'</span><span class="'+(dir?"diricon":"fileicon")+'">'+(dir?"[]":"-")+'</span><span class="name">'+escapeHtml(n.name||"mounts")+'</span></button>'+(dir?'<button class="node-refresh'+(n.loading?" loading":"")+'" data-refresh-path="'+escapeHtml(n.path)+'" title="Refresh folder" aria-label="Refresh folder '+escapeHtml(n.name||"mounts")+'">&#8635;</button>':"")+'</div>';if(dir&&open&&n.children){h+=n.children.map(c=>nodeHtml(c,depth+1)).join("")}return h}
 function selectFile(path){state.path=path;renderTree();loadFile()}
-function renderBreadcrumb(){const value=state.path||"";el("breadcrumb").innerHTML=value?value.split("/").map(p=>'<span class="crumb">'+escapeHtml(p)+'</span>').join("<span>/</span>"):'<span class="crumb">No file selected</span>'}
+function renderBreadcrumb(){const value=state.path||"";el("pathContext").disabled=!value;el("breadcrumb").innerHTML=value?value.split("/").map(p=>'<span class="crumb">'+escapeHtml(p)+'</span>').join("<span>/</span>"):'<span class="crumb">No file selected</span>'}
 function editBreadcrumb(){if(!state.path)return;el("breadcrumb").innerHTML='<input id="pathinput" class="pathinput" value="'+escapeHtml(state.path)+'">';const input=el("pathinput");input.focus();input.select();input.onblur=renderBreadcrumb;input.onkeydown=e=>{if(e.key==="Escape"||e.key==="Enter")input.blur()}}
 async function loadFile(){if(!state.path)return;renderBreadcrumb();el("content").innerHTML='<div class="empty">Loading...</div>';try{const f=await api("/v1/mounts/file/"+encodeURIComponent(state.path).replaceAll("%2F","/")+"?mode="+state.mode);renderFile(f)}catch(e){el("content").innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
+async function loadPathContext(){if(!state.path)return null;if(state.pathContext&&state.pathContext.path===state.path)return state.pathContext;const data=await api("/v1/mounts/resolve?path="+encodeURIComponent(state.path));state.pathContext=data;return data}
+async function showPathContext(){const menu=el("pathmenu");if(!state.path){return}if(!menu.hidden){menu.hidden=true;return}menu.hidden=false;menu.innerHTML='<div class="empty">Loading...</div>';try{const data=await loadPathContext();const matches=data.matches||[];if(matches.length===0){menu.innerHTML='<div class="empty">No matching devcontainer path.</div>';return}menu.innerHTML=matches.map((m,i)=>'<button class="pathitem" data-path-index="'+i+'"><span class="pathlabel">'+escapeHtml(m.label)+(m.writable?"":" · read-only")+'</span><span class="pathvalue">'+escapeHtml(m.path)+'</span></button>').join("");menu.querySelectorAll("[data-path-index]").forEach(b=>b.onclick=async()=>{const match=matches[Number(b.dataset.pathIndex)];if(!match)return;await navigator.clipboard.writeText(match.path);menu.hidden=true})}catch(e){menu.innerHTML='<div class="error">'+escapeHtml(e.message)+'</div>'}}
 function prismLanguage(path){const ext=(path.split(".").pop()||"").toLowerCase();return {cjs:"javascript",cts:"typescript",go:"go",html:"markup",htm:"markup",js:"javascript",json:"json",jsx:"jsx",markdown:"markdown",md:"markdown",mjs:"javascript",mts:"typescript",py:"python",rb:"ruby",rs:"rust",sh:"bash",svg:"markup",ts:"typescript",tsx:"tsx",txt:"none",xml:"markup",yaml:"yaml",yml:"yaml"}[ext]||ext||"none"}
 function lineHash(){const prefix="#source.";return location.hash.startsWith(prefix)?location.hash.slice(prefix.length):""}
 function renderFile(f){if(state.mode==="render"&&f.dataUrl){el("content").innerHTML='<div class="render"><img src="'+f.dataUrl+'" alt="'+escapeHtml(f.name)+'"></div>';return}if(state.mode==="render"&&f.html){el("content").innerHTML='<div class="render"><iframe sandbox srcdoc="'+escapeHtml(f.html)+'"></iframe></div>';return}const src=f.source||"";const lang=prismLanguage(f.path);const line=lineHash();el("content").innerHTML='<div class="sourceview"><pre id="source" class="sourcepre line-numbers linkable-line-numbers language-'+escapeHtml(lang)+'"'+(line?' data-line="'+escapeHtml(line)+'"':'')+'><code class="language-'+escapeHtml(lang)+'">'+escapeHtml(src)+'</code></pre></div>';const code=document.querySelector("#source code");if(window.Prism&&code)Prism.highlightElement(code)}
-el("breadcrumb").onclick=editBreadcrumb;el("unlock").onclick=applyToken;el("token").onkeydown=e=>{if(e.key==="Enter")applyToken()};el("token").oninput=()=>{if(!el("token").value.trim())setAuthState("Locked")};el("refresh").onclick=loadTree;el("collapse").onclick=()=>el("shell").classList.add("collapsed");el("expand").onclick=()=>el("shell").classList.remove("collapsed");
+el("breadcrumb").onclick=editBreadcrumb;el("pathContext").onclick=showPathContext;document.addEventListener("click",e=>{if(!e.target.closest(".pathwrap"))el("pathmenu").hidden=true});el("unlock").onclick=applyToken;el("token").onkeydown=e=>{if(e.key==="Enter")applyToken()};el("token").oninput=()=>{if(!el("token").value.trim())setAuthState("Locked")};el("refresh").onclick=loadTree;el("collapse").onclick=()=>el("shell").classList.add("collapsed");el("expand").onclick=()=>el("shell").classList.remove("collapsed");
 el("renderMode").onclick=()=>{state.mode="render";el("renderMode").classList.add("active");el("sourceMode").classList.remove("active");loadFile()};el("sourceMode").onclick=()=>{state.mode="source";el("sourceMode").classList.add("active");el("renderMode").classList.remove("active");loadFile()};
 let dragging=false;el("resizer").onpointerdown=e=>{dragging=true;el("resizer").setPointerCapture(e.pointerId)};el("resizer").onpointermove=e=>{if(dragging&&!el("shell").classList.contains("collapsed"))el("shell").style.gridTemplateColumns=Math.max(120,e.clientX)+"px 6px 1fr"};el("resizer").onpointerup=()=>dragging=false;
 if(state.token)loadTree();

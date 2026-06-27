@@ -104,6 +104,8 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 		return a.handleMountsTree(w, r)
 	case r.Method == http.MethodGet && path == "/v1/mounts/children":
 		return a.handleMountsChildren(w, r)
+	case r.Method == http.MethodGet && path == "/v1/mounts/resolve":
+		return a.handleResolveMountPath(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/mounts/file/"):
 		return a.handleMountFile(w, r)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/exposures"):
