@@ -1,6 +1,7 @@
 package t3relay
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -636,11 +637,24 @@ type pairingCredentialResponse struct {
 	ExpiresAt  string `json:"expiresAt"`
 }
 
-func mintEnvironmentPairingCredential(env Environment, sharedSecret []byte) (pairingCredentialResponse, int, error) {
+type environmentConnectRequest struct {
+	ClientKeyThumbprint      string `json:"clientKeyThumbprint"`
+	ClientProofKeyThumbprint string `json:"clientProofKeyThumbprint"`
+}
+
+func mintEnvironmentPairingCredential(env Environment, sharedSecret []byte, proofKeyThumbprint string) (pairingCredentialResponse, int, error) {
+	requestBody := map[string]string{}
+	if proofKeyThumbprint != "" {
+		requestBody["proofKeyThumbprint"] = proofKeyThumbprint
+	}
+	encodedBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return pairingCredentialResponse{}, http.StatusBadGateway, err
+	}
 	req, err := http.NewRequest(
 		http.MethodPost,
 		fmt.Sprintf("http://%s:%d/api/auth/pairing-token", env.IP, env.Port),
-		strings.NewReader("{}"),
+		bytes.NewReader(encodedBody),
 	)
 	if err != nil {
 		return pairingCredentialResponse{}, http.StatusBadGateway, err
@@ -679,9 +693,25 @@ func mintEnvironmentPairingCredential(env Environment, sharedSecret []byte) (pai
 }
 
 func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Request, envID string) error {
-	// Read body (may contain clientProofKeyThumbprint etc., but we ignore it)
+	var connectRequest environmentConnectRequest
 	if r.Body != nil {
-		_, _ = io.ReadAll(io.LimitReader(r.Body, 4096))
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil {
+			return writeJSON(w, http.StatusBadRequest, map[string]string{
+				"_tag": "InvalidRequestError", "code": "invalid_request", "reason": "invalid_request_body",
+			})
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &connectRequest); err != nil {
+				return writeJSON(w, http.StatusBadRequest, map[string]string{
+					"_tag": "InvalidRequestError", "code": "invalid_request", "reason": "invalid_request_body",
+				})
+			}
+		}
+	}
+	proofKeyThumbprint := strings.TrimSpace(connectRequest.ClientProofKeyThumbprint)
+	if proofKeyThumbprint == "" {
+		proofKeyThumbprint = strings.TrimSpace(connectRequest.ClientKeyThumbprint)
 	}
 
 	env, ok := a.lookupEnvironmentByRelayID(envID)
@@ -691,7 +721,7 @@ func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Req
 		})
 	}
 
-	credential, status, err := mintEnvironmentPairingCredential(env, a.app.SharedSecret())
+	credential, status, err := mintEnvironmentPairingCredential(env, a.app.SharedSecret(), proofKeyThumbprint)
 	if err != nil {
 		if status == http.StatusGatewayTimeout {
 			return writeJSON(w, status, map[string]string{

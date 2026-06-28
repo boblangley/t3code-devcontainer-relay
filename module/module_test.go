@@ -1076,6 +1076,13 @@ func TestAPIHandler_ConnectUsesDescriptorEnvironmentID(t *testing.T) {
 		if r.Header.Get("X-Relay-Secret") != "test-secret" {
 			t.Errorf("missing relay secret header")
 		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode pairing request body: %v", err)
+		}
+		if body["proofKeyThumbprint"] != "client-proof-key-thumbprint" {
+			t.Errorf("expected proof key thumbprint to be forwarded, got %q", body["proofKeyThumbprint"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"pairing-1","credential":"pairing-token","expiresAt":"2026-06-12T00:00:00Z"}`))
 	}))
@@ -1101,8 +1108,13 @@ func TestAPIHandler_ConnectUsesDescriptorEnvironmentID(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/environments/server-env-1/connect", nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/environments/server-env-1/connect",
+		strings.NewReader(`{"clientProofKeyThumbprint":"client-proof-key-thumbprint"}`),
+	)
 	req.Header.Set("Authorization", "Bearer tok1")
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
 	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
