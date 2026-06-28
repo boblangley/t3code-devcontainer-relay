@@ -190,6 +190,44 @@ func TestProxyHandler_EnvironmentBearerPassesThroughWithoutRelaySecret(t *testin
 	}
 }
 
+func TestProxyHandler_SetsTrustedForwardedHeaders(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Forwarded-Host"); got != "repo.t3.example.com" {
+			t.Errorf("X-Forwarded-Host = %q, want public host", got)
+		}
+		if got := r.Header.Get("X-Forwarded-Proto"); got != "https" {
+			t.Errorf("X-Forwarded-Proto = %q, want https", got)
+		}
+		if got := r.Header.Get(trustedRelayForwardedSecretHeader); got != "test-secret" {
+			t.Errorf("%s = %q, want test-secret", trustedRelayForwardedSecretHeader, got)
+		}
+		if got := r.Header.Get(relaySecretHeader); got != "" {
+			t.Errorf("%s = %q, want empty", relaySecretHeader, got)
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+
+	p, cleanup := testProxyHandlerForTarget(t, target)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "https://repo.t3.example.com/oauth/token", nil)
+	req.Header.Set("Authorization", "Bearer environment-token")
+	req.Header.Set("X-Forwarded-Host", "spoof.example.test")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set(trustedRelayForwardedSecretHeader, "spoofed-secret")
+	req.Header.Set(relaySecretHeader, "spoofed-secret")
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTP(rec, req, nil); err != nil {
+		t.Fatalf("ServeHTTP: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxyHandler_RelayBearerInjectsRelaySecret(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "" {

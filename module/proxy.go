@@ -15,6 +15,11 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 )
 
+const (
+	relaySecretHeader                 = "X-Relay-Secret"
+	trustedRelayForwardedSecretHeader = "X-T3-Relay-Forwarded-Secret"
+)
+
 func init() {
 	caddy.RegisterModule(&ProxyHandler{})
 	httpcaddyfile.RegisterHandlerDirective("t3code_relay_proxy", func(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -105,14 +110,28 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	}
 
 	secret := p.app.SharedSecret()
+	publicHost := r.Host
+	publicProto := "http"
+	if r.TLS != nil {
+		publicProto = "https"
+	}
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			req.Header.Del(relaySecretHeader)
+			req.Header.Del(trustedRelayForwardedSecretHeader)
+			req.Header.Del("X-Forwarded-Host")
+			req.Header.Del("X-Forwarded-Proto")
+			req.Header.Set("X-Forwarded-Host", publicHost)
+			req.Header.Set("X-Forwarded-Proto", publicProto)
+			if len(secret) > 0 {
+				req.Header.Set(trustedRelayForwardedSecretHeader, string(secret))
+			}
 			if relayAuthorized && len(secret) > 0 {
 				req.Header.Del("Authorization")
-				req.Header.Set("X-Relay-Secret", string(secret))
+				req.Header.Set(relaySecretHeader, string(secret))
 			}
 		},
 		FlushInterval: -1, // streaming / WebSocket support
