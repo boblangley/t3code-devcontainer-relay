@@ -40,7 +40,7 @@ dependency has been resolved, which should never happen in normal usage.
 | `sshAuthSock` | string | `/tmp/vscode-ssh-agent.sock` | Stable SSH agent socket path exported to the T3 server. The supervisor keeps it linked to VS Code's forwarded socket under `/tmp`. |
 | `tailscale` | boolean | `true` | Install and start `tailscaled` in userspace networking mode. Set to `false` to opt out. |
 | `tailscaleAuthKeyPath` | string | `/run/t3code/tailscale-authkey` | Path inside the container where a Tailscale auth key file is mounted. The key is read from this file at startup, never from an env var. |
-| `tailscaleHostname` | string | empty | Optional Tailscale machine hostname. Leave empty to derive one from `DEVCONTAINER_ID`. |
+| `tailscaleHostname` | string | empty | Optional Tailscale machine hostname. Leave empty to derive one from the container hostname. |
 | `tailscaleStateDir` | string | empty | Optional `tailscaled` state directory. Leave empty to use `/var/lib/tailscale`. |
 | `tailscaleServe` | boolean | `true` | Enables the T3 server's Tailscale Serve integration. |
 | `tailscaleServePort` | string | `443` | HTTPS port passed to Tailscale Serve. |
@@ -65,7 +65,7 @@ Minimal `devcontainer.json` (no options overrides needed for standard use):
   "runArgs": [
     "--network=dev-ingress",
     "-l", "devcontainer.id=${devcontainerId}",
-    "-h", "${devcontainerId}",
+    "-h", "<myrepo>",
     "--name", "<myrepo>"
   ],
   "mounts": [
@@ -82,7 +82,7 @@ Minimal `devcontainer.json` (no options overrides needed for standard use):
 |---|---|
 | `--network=dev-ingress` | Attach to the shared bridge network so Caddy can reach the server. The network must be created once on the host: `docker network create dev-ingress`. |
 | `-l devcontainer.id=...` | Label the container so the `t3code-relay` Caddy module can discover it via the Docker API. |
-| `-h ${devcontainerId}` | Set the hostname to the devcontainer ID so Caddy can derive a stable address. |
+| `-h <myrepo>` | Set the container hostname. The feature uses this as the default Tailscale machine hostname when `tailscaleHostname` is empty. |
 | `--name <myrepo>` | Name the container; the relay uses this as the routing hostname prefix (`<myrepo>.t3.<domain>`). Names must be unique across running containers. |
 
 ### Required secret bind mount
@@ -134,6 +134,17 @@ Set `tailnetDnsName` only when automatic MagicDNS discovery is not appropriate:
 "features": {
   "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
     "tailnetDnsName": "myrepo.example-tailnet.ts.net"
+  }
+}
+```
+
+Set `tailscaleHostname` only when you want the Tailscale machine name shown in
+the admin console and MagicDNS to differ from the container hostname.
+
+```jsonc
+"features": {
+  "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+    "tailscaleHostname": "myrepo"
   }
 }
 ```

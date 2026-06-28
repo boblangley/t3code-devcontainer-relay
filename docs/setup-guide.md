@@ -277,7 +277,7 @@ Full details: [add-a-devcontainer.md](add-a-devcontainer.md)
   "runArgs": [
     "--network=dev-ingress",
     "-l", "devcontainer.id=${devcontainerId}",
-    "-h", "${devcontainerId}",
+    "-h", "myrepo",
     "--name", "myrepo"
   ],
   "mounts": [

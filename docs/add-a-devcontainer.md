@@ -60,7 +60,7 @@ it with any configuration you already have:
   "runArgs": [
     "--network=dev-ingress",
     "-l", "devcontainer.id=${devcontainerId}",
-    "-h", "${devcontainerId}",
+    "-h", "myrepo",
     "--name", "myrepo"
   ],
   "mounts": [
@@ -152,11 +152,11 @@ watches for containers carrying this exact label — it is how the relay knows "
 a devcontainer, not some random Docker process."
 
 ```jsonc
-"-h", "${devcontainerId}"
+"-h", "myrepo"
 ```
 
-Sets the hostname inside the container to the same stable ID. This lets the relay consistently
-identify this environment across restarts.
+Sets the hostname inside the container. The T3Code server feature uses this as
+the default Tailscale machine hostname.
 
 ```jsonc
 "--name", "myrepo"

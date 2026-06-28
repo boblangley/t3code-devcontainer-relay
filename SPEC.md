@@ -180,7 +180,7 @@ Rows for stopped containers are retained with `status='stopped'` (history is che
   "runArgs": [
     "--network=dev-ingress",
     "-l", "devcontainer.id=${devcontainerId}",
-    "-h", "${devcontainerId}",
+    "-h", "<myrepo>",
     "--name", "<myrepo>"
   ],
   "mounts": [
@@ -263,7 +263,7 @@ The repo itself is developed inside a devcontainer that follows the exact consum
   "runArgs": [
     "--network=dev-ingress",
     "-l", "devcontainer.id=${devcontainerId}",
-    "-h", "${devcontainerId}",
+    "-h", "t3code-devcontainer-relay",
     "--name", "t3code-devcontainer-relay"
   ],
   "mounts": [

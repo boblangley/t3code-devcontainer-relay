@@ -11,6 +11,17 @@ T3CODE_TAILSCALE_ENABLED="${T3CODE_TAILSCALE_ENABLED:-true}"
 T3CODE_TAILSCALE_AUTHKEY_PATH="${T3CODE_TAILSCALE_AUTHKEY_PATH:-/run/t3code/tailscale-authkey}"
 T3CODE_TAILSCALE_HOSTNAME="${T3CODE_TAILSCALE_HOSTNAME:-}"
 
+sanitize_hostname() {
+    printf '%s' "${1:-}" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr -cs 'a-z0-9-' '-' \
+        | sed -e 's/^-//' -e 's/-$//'
+}
+
+looks_like_docker_id() {
+    printf '%s' "${1:-}" | grep -Eq '^[0-9a-f]{12}([0-9a-f]{52})?$'
+}
+
 if [ "${T3CODE_TAILSCALE_ENABLED}" != "true" ]; then
     echo "[tailscale-up] disabled by feature config"
     exit 0
@@ -31,10 +42,10 @@ done
 hostname_arg=()
 if [ -n "${T3CODE_TAILSCALE_HOSTNAME}" ]; then
     hostname_arg=(--hostname="${T3CODE_TAILSCALE_HOSTNAME}")
-elif [ -n "${DEVCONTAINER_ID:-}" ]; then
-    safe_name="$(printf '%s' "${DEVCONTAINER_ID}" | tr -cs 'A-Za-z0-9-' '-' | sed -e 's/^-//' -e 's/-$//')"
+elif [ -n "${HOSTNAME:-}" ] && ! looks_like_docker_id "${HOSTNAME}"; then
+    safe_name="$(sanitize_hostname "${HOSTNAME}")"
     if [ -n "${safe_name}" ]; then
-        hostname_arg=(--hostname="t3code-${safe_name}")
+        hostname_arg=(--hostname="${safe_name}")
     fi
 fi
 
