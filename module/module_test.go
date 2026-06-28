@@ -825,6 +825,117 @@ func TestAPIHandler_ListEnvironments_WithAuth(t *testing.T) {
 	}
 }
 
+func TestAPIHandler_ListEnvironmentsPrefersAdvertisedTailscaleEndpoint(t *testing.T) {
+	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	env := Environment{
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status: "running",
+		ProbeJSON: `{
+			"environmentId":"server-env-1",
+			"label":"My Repo",
+			"platform":{"os":"linux","arch":"x64"},
+			"serverVersion":"0.0.27",
+			"advertisedEndpoints":[{
+				"id":"tailscale-https",
+				"label":"Tailscale HTTPS",
+				"provider":{"id":"tailscale","label":"Tailscale","kind":"private-network"},
+				"httpBaseUrl":"https://myrepo.tailnet.ts.net/",
+				"wsBaseUrl":"wss://myrepo.tailnet.ts.net/",
+				"reachability":"private-network",
+				"compatibility":{"hostedHttpsApp":"compatible","desktopApp":"compatible"},
+				"source":"server",
+				"status":"available"
+			}]
+		}`,
+		FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	record := resp["environments"].([]any)[0].(map[string]any)
+	endpoint := record["endpoint"].(map[string]any)
+	if endpoint["httpBaseUrl"] != "https://myrepo.tailnet.ts.net/" {
+		t.Errorf("httpBaseUrl = %v, want tailscale endpoint", endpoint["httpBaseUrl"])
+	}
+	if endpoint["wsBaseUrl"] != "wss://myrepo.tailnet.ts.net/" {
+		t.Errorf("wsBaseUrl = %v, want tailscale endpoint", endpoint["wsBaseUrl"])
+	}
+	if endpoint["providerKind"] != "manual" {
+		t.Errorf("providerKind = %v, want manual", endpoint["providerKind"])
+	}
+}
+
+func TestAPIHandler_ListEnvironmentsIgnoresUnavailableAdvertisedTailscaleEndpoint(t *testing.T) {
+	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
+	defer cleanup()
+
+	env := Environment{
+		ID: "devcontainer-1", ContainerID: "c1", Name: "myrepo",
+		Hostname: "myrepo.t3.example.com", IP: "10.0.0.1", Port: 3773,
+		Status: "running",
+		ProbeJSON: `{
+			"environmentId":"server-env-1",
+			"label":"My Repo",
+			"platform":{"os":"linux","arch":"x64"},
+			"serverVersion":"0.0.27",
+			"advertisedEndpoints":[{
+				"provider":{"id":"tailscale","label":"Tailscale","kind":"private-network"},
+				"httpBaseUrl":"https://myrepo.tailnet.ts.net/",
+				"wsBaseUrl":"wss://myrepo.tailnet.ts.net/",
+				"reachability":"private-network",
+				"status":"unavailable"
+			}]
+		}`,
+		FirstSeen: 1000, LastSeen: 1000,
+	}
+	if err := store.Upsert(env); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments", nil)
+	req.Header.Set("Authorization", "Bearer tok1")
+	w := httptest.NewRecorder()
+
+	if err := ah.ServeHTTP(w, req, noopHandler()); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	record := resp["environments"].([]any)[0].(map[string]any)
+	endpoint := record["endpoint"].(map[string]any)
+	if endpoint["httpBaseUrl"] != "https://myrepo.t3.example.com" {
+		t.Errorf("httpBaseUrl = %v, want relay endpoint", endpoint["httpBaseUrl"])
+	}
+	if endpoint["providerKind"] != "t3_relay" {
+		t.Errorf("providerKind = %v, want t3_relay", endpoint["providerKind"])
+	}
+}
+
 func TestAPIHandler_StatusUsesDescriptorEnvironmentID(t *testing.T) {
 	ah, store, cleanup := testAPIHandler(t, []string{"tok1"})
 	defer cleanup()

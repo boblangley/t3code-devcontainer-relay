@@ -11,6 +11,13 @@
 #   WORKSPACEHOME  — explicit server cwd override, default ""
 #   RUNASUSER      — runtime user for the server process, default "vscode"
 #   SSHAUTHSOCK    — stable SSH agent socket path exposed to the server process
+#   TAILSCALE      — start tailscaled by default
+#   TAILSCALEAUTHKEYPATH — mounted auth key file path
+#   TAILSCALEHOSTNAME    — optional tailnet hostname
+#   TAILSCALESTATEDIR    — optional tailscaled state directory
+#   TAILSCALESERVE       — enable T3Code's Tailscale Serve integration
+#   TAILSCALESERVEPORT   — HTTPS port for Tailscale Serve
+#   TAILNETDNSNAME       — optional DNS name advertised by the T3Code server
 #
 # Supported base image: mcr.microsoft.com/devcontainers/base:noble ONLY.
 # This script assumes Ubuntu 24.04 (glibc, apt, bash) and will fail fast
@@ -36,6 +43,13 @@ FEATURE_STATEPARENTDIR="${STATEPARENTDIR:-}"
 FEATURE_WORKSPACEHOME="${WORKSPACEHOME:-}"
 FEATURE_RUNASUSER="${RUNASUSER:-vscode}"
 FEATURE_SSHAUTHSOCK="${SSHAUTHSOCK:-/tmp/vscode-ssh-agent.sock}"
+FEATURE_TAILSCALE="${TAILSCALE:-true}"
+FEATURE_TAILSCALEAUTHKEYPATH="${TAILSCALEAUTHKEYPATH:-/run/t3code/tailscale-authkey}"
+FEATURE_TAILSCALEHOSTNAME="${TAILSCALEHOSTNAME:-}"
+FEATURE_TAILSCALESTATEDIR="${TAILSCALESTATEDIR:-}"
+FEATURE_TAILSCALESERVE="${TAILSCALESERVE:-true}"
+FEATURE_TAILSCALESERVEPORT="${TAILSCALESERVEPORT:-443}"
+FEATURE_TAILNETDNSNAME="${TAILNETDNSNAME:-}"
 
 # ---------------------------------------------------------------------------
 # Guard 1: Ubuntu noble (24.04) only
@@ -77,6 +91,13 @@ STATEPARENTDIR="${FEATURE_STATEPARENTDIR}"
 WORKSPACEHOME="${FEATURE_WORKSPACEHOME}"
 RUNASUSER="${FEATURE_RUNASUSER}"
 SSHAUTHSOCK="${FEATURE_SSHAUTHSOCK}"
+TAILSCALE="${FEATURE_TAILSCALE}"
+TAILSCALEAUTHKEYPATH="${FEATURE_TAILSCALEAUTHKEYPATH}"
+TAILSCALEHOSTNAME="${FEATURE_TAILSCALEHOSTNAME}"
+TAILSCALESTATEDIR="${FEATURE_TAILSCALESTATEDIR}"
+TAILSCALESERVE="${FEATURE_TAILSCALESERVE}"
+TAILSCALESERVEPORT="${FEATURE_TAILSCALESERVEPORT}"
+TAILNETDNSNAME="${FEATURE_TAILNETDNSNAME}"
 
 info "Installing t3code-server version='${VERSION}' port='${PORT}' secretPath='${SECRETPATH}'"
 if [ -n "${BASEDIR}" ]; then
@@ -93,6 +114,16 @@ fi
 if [ -n "${SSHAUTHSOCK}" ]; then
     info "Server process will use stable SSH_AUTH_SOCK='${SSHAUTHSOCK}'"
 fi
+info "Tailscale enabled='${TAILSCALE}' authKeyPath='${TAILSCALEAUTHKEYPATH}' serve='${TAILSCALESERVE}' servePort='${TAILSCALESERVEPORT}'"
+if [ -n "${TAILSCALEHOSTNAME}" ]; then
+    info "Using explicit Tailscale hostname='${TAILSCALEHOSTNAME}'"
+fi
+if [ -n "${TAILSCALESTATEDIR}" ]; then
+    info "Using explicit tailscaled state dir='${TAILSCALESTATEDIR}'"
+fi
+if [ -n "${TAILNETDNSNAME}" ]; then
+    info "Using explicit tailnet DNS name='${TAILNETDNSNAME}'"
+fi
 
 # ---------------------------------------------------------------------------
 # Determine target architecture
@@ -108,6 +139,30 @@ case "${UNAME_M}" in
 esac
 
 info "Target architecture: ${ARCH}"
+
+# ---------------------------------------------------------------------------
+# Install s6-overlay and Tailscale
+# ---------------------------------------------------------------------------
+
+S6_OVERLAY_VERSION="3.2.0.3"
+case "${UNAME_M}" in
+    x86_64)   S6_ARCH="x86_64" ;;
+    aarch64)  S6_ARCH="aarch64" ;;
+    *)        err "Unsupported architecture for s6-overlay: ${UNAME_M}" ;;
+esac
+
+if [ ! -x /init ]; then
+    info "Installing s6-overlay ${S6_OVERLAY_VERSION} ..."
+    curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
+        | tar -C / -Jxpf -
+    curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
+        | tar -C / -Jxpf -
+fi
+
+if [ "${TAILSCALE}" = "true" ] && ! command -v tailscale >/dev/null 2>&1; then
+    info "Installing Tailscale ..."
+    curl -fsSL https://tailscale.com/install.sh | sh
+fi
 
 # ---------------------------------------------------------------------------
 # Construct the download URL
@@ -183,18 +238,52 @@ info "Server installed to ${INSTALL_DIR}"
 # Install the supervise script
 # ---------------------------------------------------------------------------
 
-SUPERVISE_SRC="${FEATURE_DIR}/t3code-supervise.sh"
-SUPERVISE_DEST="/usr/local/share/t3code-supervise.sh"
+SERVER_RUN_SRC="${FEATURE_DIR}/t3code-server-run.sh"
+SERVER_RUN_DEST="/usr/local/share/t3code-server-run.sh"
+SSH_WATCHER_SRC="${FEATURE_DIR}/t3code-ssh-auth-sock-watcher.sh"
+SSH_WATCHER_DEST="/usr/local/share/t3code-ssh-auth-sock-watcher.sh"
+TAILSCALED_RUN_SRC="${FEATURE_DIR}/tailscaled-run.sh"
+TAILSCALED_RUN_DEST="/usr/local/share/tailscaled-run.sh"
+TAILSCALE_UP_SRC="${FEATURE_DIR}/tailscale-up.sh"
+TAILSCALE_UP_DEST="/usr/local/share/tailscale-up.sh"
 HELPER_SRC="${FEATURE_DIR}/t3relay"
 HELPER_DEST="/usr/local/bin/t3relay"
 
-if [ ! -f "${SUPERVISE_SRC}" ]; then
-    err "t3code-supervise.sh not found at expected path '${SUPERVISE_SRC}'. This is a feature packaging error."
-fi
+for script in "${SERVER_RUN_SRC}" "${SSH_WATCHER_SRC}" "${TAILSCALED_RUN_SRC}" "${TAILSCALE_UP_SRC}"; do
+    if [ ! -f "${script}" ]; then
+        err "$(basename "${script}") not found at expected path '${script}'. This is a feature packaging error."
+    fi
+done
 
-cp "${SUPERVISE_SRC}" "${SUPERVISE_DEST}"
-chmod +x "${SUPERVISE_DEST}"
-info "Supervise script installed to ${SUPERVISE_DEST}"
+cp "${SERVER_RUN_SRC}" "${SERVER_RUN_DEST}"
+cp "${SSH_WATCHER_SRC}" "${SSH_WATCHER_DEST}"
+cp "${TAILSCALED_RUN_SRC}" "${TAILSCALED_RUN_DEST}"
+cp "${TAILSCALE_UP_SRC}" "${TAILSCALE_UP_DEST}"
+chmod +x "${SERVER_RUN_DEST}" "${SSH_WATCHER_DEST}" "${TAILSCALED_RUN_DEST}" "${TAILSCALE_UP_DEST}"
+info "Runtime scripts installed to /usr/local/share"
+
+mkdir -p /etc/services.d/tailscaled /etc/services.d/t3code-server
+cat > /etc/services.d/tailscaled/run <<'EOF'
+#!/usr/bin/execlineb -P
+/usr/local/share/tailscaled-run.sh
+EOF
+chmod +x /etc/services.d/tailscaled/run
+
+cat > /etc/services.d/t3code-server/run <<'EOF'
+#!/usr/bin/execlineb -P
+/usr/local/share/t3code-server-run.sh
+EOF
+chmod +x /etc/services.d/t3code-server/run
+
+if [ -n "${SSHAUTHSOCK}" ]; then
+    mkdir -p /etc/services.d/t3code-ssh-auth-sock-watcher
+    cat > /etc/services.d/t3code-ssh-auth-sock-watcher/run <<'EOF'
+#!/usr/bin/execlineb -P
+/usr/local/share/t3code-ssh-auth-sock-watcher.sh
+EOF
+    chmod +x /etc/services.d/t3code-ssh-auth-sock-watcher/run
+fi
+info "s6 services installed"
 
 if [ ! -f "${HELPER_SRC}" ]; then
     err "t3relay helper not found at expected path '${HELPER_SRC}'. This is a feature packaging error."
@@ -226,6 +315,13 @@ T3CODE_STATEPARENTDIR="${STATEPARENTDIR}"
 T3CODE_WORKSPACEHOME="${WORKSPACEHOME}"
 T3CODE_RUNASUSER="${RUNASUSER}"
 T3CODE_SSHAUTHSOCK="${SSHAUTHSOCK}"
+T3CODE_TAILSCALE_ENABLED="${TAILSCALE}"
+T3CODE_TAILSCALE_AUTHKEY_PATH="${TAILSCALEAUTHKEYPATH}"
+T3CODE_TAILSCALE_HOSTNAME="${TAILSCALEHOSTNAME}"
+T3CODE_TAILSCALE_STATE_DIR="${TAILSCALESTATEDIR}"
+T3CODE_TAILSCALE_SERVE_ENABLED="${TAILSCALESERVE}"
+T3CODE_TAILSCALE_SERVE_PORT="${TAILSCALESERVEPORT}"
+T3CODE_TAILNET_DNS_NAME="${TAILNETDNSNAME}"
 EOF
 
 chmod 644 /usr/local/etc/t3code-server.env

@@ -193,6 +193,10 @@ func envIDFromEnvironmentPath(path string) string {
 
 // environmentEndpoint builds the endpoint object for an environment.
 func environmentEndpoint(app *RelayApp, env Environment) map[string]string {
+	if endpoint, ok := advertisedTailnetEndpoint(env.ProbeJSON); ok {
+		return endpoint
+	}
+
 	host := app.PublishedHostname(env.Name)
 	if host == "" {
 		host = env.Hostname
@@ -202,6 +206,89 @@ func environmentEndpoint(app *RelayApp, env Environment) map[string]string {
 		"wsBaseUrl":    "wss://" + host,
 		"providerKind": "t3_relay",
 	}
+}
+
+type advertisedEndpointProbe struct {
+	HTTPBaseURL  string `json:"httpBaseUrl"`
+	WSBaseURL    string `json:"wsBaseUrl"`
+	Status       string `json:"status"`
+	Reachability string `json:"reachability"`
+	Provider     struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+		Kind  string `json:"kind"`
+	} `json:"provider"`
+}
+
+type advertisedEndpointDescriptor struct {
+	AdvertisedEndpoints []advertisedEndpointProbe `json:"advertisedEndpoints"`
+}
+
+func advertisedTailnetEndpoint(probeJSON string) (map[string]string, bool) {
+	if strings.TrimSpace(probeJSON) == "" {
+		return nil, false
+	}
+
+	var descriptor advertisedEndpointDescriptor
+	if err := json.Unmarshal([]byte(probeJSON), &descriptor); err != nil {
+		return nil, false
+	}
+
+	for _, endpoint := range descriptor.AdvertisedEndpoints {
+		httpBaseURL := strings.TrimSpace(endpoint.HTTPBaseURL)
+		if httpBaseURL == "" || !strings.HasPrefix(httpBaseURL, "https://") {
+			continue
+		}
+		if endpoint.Status != "" && endpoint.Status != "available" {
+			continue
+		}
+
+		providerID := strings.ToLower(strings.TrimSpace(endpoint.Provider.ID))
+		providerLabel := strings.ToLower(strings.TrimSpace(endpoint.Provider.Label))
+		providerKind := strings.ToLower(strings.TrimSpace(endpoint.Provider.Kind))
+		reachability := strings.ToLower(strings.TrimSpace(endpoint.Reachability))
+
+		isTailnet := strings.Contains(providerID, "tailscale") ||
+			strings.Contains(providerLabel, "tailscale") ||
+			strings.Contains(providerID, "tailnet") ||
+			strings.Contains(providerLabel, "tailnet") ||
+			(providerKind == "private-network" && reachability == "private-network")
+		if !isTailnet {
+			continue
+		}
+
+		wsBaseURL := strings.TrimSpace(endpoint.WSBaseURL)
+		if wsBaseURL == "" {
+			wsBaseURL = deriveWSBaseURL(httpBaseURL)
+		}
+		if wsBaseURL == "" {
+			continue
+		}
+
+		return map[string]string{
+			"httpBaseUrl":  httpBaseURL,
+			"wsBaseUrl":    wsBaseURL,
+			"providerKind": "manual",
+		}, true
+	}
+
+	return nil, false
+}
+
+func deriveWSBaseURL(httpBaseURL string) string {
+	u, err := url.Parse(httpBaseURL)
+	if err != nil {
+		return ""
+	}
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	default:
+		return ""
+	}
+	return u.String()
 }
 
 func environmentDescriptorID(env Environment) string {

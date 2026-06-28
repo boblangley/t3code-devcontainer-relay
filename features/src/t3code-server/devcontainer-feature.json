@@ -44,6 +44,41 @@
       "type": "string",
       "default": "/tmp/vscode-ssh-agent.sock",
       "description": "Stable SSH_AUTH_SOCK path exported to the T3Code server process. The supervisor keeps this path symlinked to the VS Code forwarded socket when one appears under /tmp."
+    },
+    "tailscale": {
+      "type": "boolean",
+      "default": true,
+      "description": "Install and start tailscaled in the devcontainer. Enabled by default so relay clients can connect directly to the devcontainer over the tailnet."
+    },
+    "tailscaleAuthKeyPath": {
+      "type": "string",
+      "default": "/run/t3code/tailscale-authkey",
+      "description": "Path to a mounted Tailscale auth key file. The feature reads this file at container startup; the auth key is never configured as an environment variable."
+    },
+    "tailscaleHostname": {
+      "type": "string",
+      "default": "",
+      "description": "Optional hostname to use when joining the tailnet. Leave empty to derive one from DEVCONTAINER_ID when available."
+    },
+    "tailscaleStateDir": {
+      "type": "string",
+      "default": "",
+      "description": "Optional tailscaled state directory. Leave empty to store state under the resolved T3CODE_HOME when possible, or /var/lib/tailscale."
+    },
+    "tailscaleServe": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable the T3Code server's Tailscale Serve integration by default."
+    },
+    "tailscaleServePort": {
+      "type": "string",
+      "default": "443",
+      "description": "HTTPS port passed to Tailscale Serve when tailscaleServe is enabled."
+    },
+    "tailnetDnsName": {
+      "type": "string",
+      "default": "",
+      "description": "Optional explicit tailnet DNS name for the T3Code server to advertise. Leave empty to resolve it from tailscale status at startup."
     }
   },
   "dependsOn": {
@@ -54,6 +89,6 @@
   "installsAfter": [
     "ghcr.io/devcontainers/features/node"
   ],
-  "entrypoint": "/usr/local/share/t3code-supervise.sh",
+  "entrypoint": "/init",
   "customizations": {}
 }

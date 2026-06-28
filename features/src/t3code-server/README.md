@@ -2,7 +2,9 @@
 
 Installs and supervises the forked T3Code server (bearer-auth branch) inside a
 devcontainer. The server listens on `0.0.0.0:<port>` and validates inbound relay
-requests via a shared-secret file that is bind-mounted from the host.
+requests via a shared-secret file that is bind-mounted from the host. Tailscale
+is enabled by default so clients can connect directly to the devcontainer over
+the tailnet when a Tailscale auth key file is mounted.
 
 ## Supported base image
 
@@ -36,6 +38,13 @@ dependency has been resolved, which should never happen in normal usage.
 | `workspaceHome` | string | empty | Workspace cwd passed to the server. Leave empty to use the `WORKSPACE_HOME` container environment variable when present. |
 | `runAsUser` | string | `vscode` | Linux user that runs the T3 server process. Set to empty to run as the entrypoint user. |
 | `sshAuthSock` | string | `/tmp/vscode-ssh-agent.sock` | Stable SSH agent socket path exported to the T3 server. The supervisor keeps it linked to VS Code's forwarded socket under `/tmp`. |
+| `tailscale` | boolean | `true` | Install and start `tailscaled` in userspace networking mode. Set to `false` to opt out. |
+| `tailscaleAuthKeyPath` | string | `/run/t3code/tailscale-authkey` | Path inside the container where a Tailscale auth key file is mounted. The key is read from this file at startup, never from an env var. |
+| `tailscaleHostname` | string | empty | Optional Tailscale machine hostname. Leave empty to derive one from `DEVCONTAINER_ID`. |
+| `tailscaleStateDir` | string | empty | Optional `tailscaled` state directory. Leave empty to use `/var/lib/tailscale`. |
+| `tailscaleServe` | boolean | `true` | Enables the T3 server's Tailscale Serve integration. |
+| `tailscaleServePort` | string | `443` | HTTPS port passed to Tailscale Serve. |
+| `tailnetDnsName` | string | empty | Optional explicit MagicDNS name for the server to advertise. Leave empty to resolve from `tailscale status --json`. |
 
 ## Usage
 
@@ -61,6 +70,7 @@ Minimal `devcontainer.json` (no options overrides needed for standard use):
   ],
   "mounts": [
     "source=${localEnv:HOME}/.config/t3relay/secret,target=/run/t3code/relay-secret,type=bind,readonly",
+    "source=${localEnv:HOME}/.config/t3relay/tailscale-authkey,target=/run/t3code/tailscale-authkey,type=bind,readonly",
     "source=${localEnv:HOME}/.local/share/t3code-devcontainers,target=/mnt/t3code-state,type=bind"
   ]
 }
@@ -97,6 +107,46 @@ top-level `docker-compose.yml`).
 
 If you override `secretPath` in the feature options, update the mount `target`
 to match.
+
+### Tailscale direct endpoints
+
+Tailscale is on by default. To join the devcontainer to your tailnet, mount a
+Tailscale auth key file at the default `tailscaleAuthKeyPath`:
+
+```jsonc
+"mounts": [
+  "source=${localEnv:HOME}/.config/t3relay/tailscale-authkey,target=/run/t3code/tailscale-authkey,type=bind,readonly"
+]
+```
+
+If the file is not present or not readable, `tailscaled` still starts but stays
+logged out, and the relay falls back to the existing relay-proxied endpoint.
+
+When Tailscale is joined, the feature starts `tailscaled` in userspace
+networking mode and the T3 server enables Tailscale Serve for its local server
+port. The server advertises its Tailscale HTTPS endpoint in
+`/.well-known/t3/environment`; the relay records that descriptor and returns
+the MagicDNS endpoint from `/v1/environments` and `/connect`.
+
+Set `tailnetDnsName` only when automatic MagicDNS discovery is not appropriate:
+
+```jsonc
+"features": {
+  "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+    "tailnetDnsName": "myrepo.example-tailnet.ts.net"
+  }
+}
+```
+
+Set `tailscale` to `false` to opt out:
+
+```jsonc
+"features": {
+  "ghcr.io/boblangley/t3code-devcontainer-relay/t3code-server:1": {
+    "tailscale": false
+  }
+}
+```
 
 ### On-demand port exposure helper
 
@@ -224,28 +274,21 @@ Override `sshAuthSock` only if another process already owns the default path.
    (`boblangley/t3code-devcontainer-relay`) for the detected arch
    (`linux-amd64` or `linux-arm64`, glibc).
 3. Extracts it to `/usr/local/lib/t3code-server`.
-4. Installs `t3code-supervise.sh` to `/usr/local/share/t3code-supervise.sh`.
-5. Installs the `t3relay` helper to `/usr/local/bin/t3relay`.
-6. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
-   entrypoint can source them without re-parsing `devcontainer.json`.
+4. Installs s6-overlay and, when enabled, the Tailscale CLI/daemon.
+5. Installs the T3 server, Tailscale, and SSH socket watcher run scripts under
+   `/usr/local/share`.
+6. Installs s6 service definitions under `/etc/services.d`.
+7. Installs the `t3relay` helper to `/usr/local/bin/t3relay`.
+8. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
+   runtime scripts can source them without re-parsing `devcontainer.json`.
 
-`t3code-supervise.sh` runs as the devcontainer `entrypoint` on every container
-start:
+The devcontainer entrypoint is `/init` from s6-overlay. s6 supervises:
 
-1. Sources `/usr/local/etc/t3code-server.env`.
-2. Checks a PID file at `/tmp/t3code-server.pid` — if the supervisor is already
-   running (e.g. after a `docker restart` without a rebuild) it skips re-launch.
-3. Resolves `T3CODE_HOME` from `baseDir`, `stateParentDir`, existing
-   `T3CODE_HOME`, or the upstream server default.
-4. Starts an SSH agent socket watcher that links `sshAuthSock` to the newest
-   `/tmp/vscode-ssh-auth-*.sock` socket when VS Code creates one.
-5. Resolves the server cwd from `workspaceHome`, `WORKSPACE_HOME`, or the
-   upstream server default.
-6. Starts a restart-loop supervisor in a background subshell: runs the Node
-   server as `runAsUser` when possible, logs to `/tmp/t3code-server.log`, backs
-   off exponentially (1 → 2 → 4 … → 30 s cap) on repeated crashes.
-7. `exec "$@"` to hand off to the container's own command (or `sleep infinity`
-   if none is provided), keeping the container alive.
+| Service | Purpose |
+|---|---|
+| `tailscaled` | Starts `tailscaled` in userspace networking mode and runs `tailscale up` from the mounted auth key file when available. |
+| `t3code-server` | Resolves state/workspace/Tailscale DNS context, then starts the Node server as `runAsUser` when possible. |
+| `t3code-ssh-auth-sock-watcher` | Keeps the stable SSH agent socket path linked to VS Code's forwarded socket. Installed only when `sshAuthSock` is non-empty. |
 
 ### Server environment variables
 
@@ -258,8 +301,11 @@ must match what the forked server reads (defined in `vendor-t3code`'s
 | `PORT` | TCP port (`0.0.0.0:PORT`) |
 | `T3CODE_HOME` | Base directory for server state when configured or inherited |
 | `T3CODE_RELAY_SECRET_FILE` | Filesystem path to the shared-secret file |
+| `T3CODE_TAILSCALE_SERVE` | Enables the server's Tailscale Serve integration |
+| `T3CODE_TAILSCALE_SERVE_PORT` | HTTPS port for Tailscale Serve |
+| `T3CODE_TAILNET_DNS_NAME` | Optional MagicDNS name advertised in the environment descriptor |
 
-Logs are appended to `/tmp/t3code-server.log` inside the container.
+Service logs are written to the container output stream through s6.
 
 ## Artifact URL convention
 
@@ -291,6 +337,7 @@ naming changes, update the `ASSET_NAME` variable in `install.sh` to match.
 
 ## Supervision notes
 
-s6-overlay was evaluated and rejected as overkill for a single supervised
-process.  The simple while-loop supervisor is intentional.  If a second
-supervised process is ever needed, reconsider s6-overlay at that point.
+The feature uses s6-overlay because it now owns more than one long-running
+process: the T3 server, `tailscaled`, and the SSH agent socket watcher. This
+keeps restart behavior and logs in the container supervisor instead of a custom
+Bash restart loop.

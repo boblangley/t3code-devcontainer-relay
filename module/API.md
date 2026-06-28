@@ -29,9 +29,9 @@ The module exposes two surfaces on one Caddy instance (one listener, :443):
 | Method | Path | Auth | Behaviour |
 |---|---|---|---|
 | GET | `/health` | none | `{ "ok": true, "service": "relay" }` |
-| GET | `/v1/environments` | Bearer | List environments from SQLite. Each record matches contracts `RelayClientEnvironmentRecord` exactly: `{ environmentId, label, endpoint: { httpBaseUrl, wsBaseUrl, providerKind: "t3_relay" }, linkedAt }` — `environmentId` is the T3 server descriptor id from `/.well-known/t3/environment` when available, while the relay may keep a separate internal devcontainer row key. `label` is the relay's container-derived name (`t3relay.host` override or Docker container name), never the server probe label. `label` and `linkedAt` are non-empty (the client decodes with Effect Schema). `httpBaseUrl`/`wsBaseUrl` point at `https://<name>.t3.<domain>` (surface B). Per-environment status/platform are read from `/status`, not this record. |
+| GET | `/v1/environments` | Bearer | List environments from SQLite. Each record matches contracts `RelayClientEnvironmentRecord` exactly: `{ environmentId, label, endpoint, linkedAt }` — `environmentId` is the T3 server descriptor id from `/.well-known/t3/environment` when available, while the relay may keep a separate internal devcontainer row key. `label` is the relay's container-derived name (`t3relay.host` override or Docker container name), never the server probe label. `label` and `linkedAt` are non-empty (the client decodes with Effect Schema). `endpoint` prefers an available Tailscale HTTPS endpoint advertised by the environment descriptor and otherwise falls back to `https://<name>.t3.<domain>` (surface B). Per-environment status/platform are read from `/status`, not this record. |
 | POST | `/v1/environments/:id/status` | Bearer | Probe the container (`GET /.well-known/t3/environment` with `X-Relay-Secret`); return `{ environmentId, endpoint, status: online\|offline, checkedAt, descriptor }`. `environmentId` must match the listed environment id and, when present, `descriptor.environmentId`. The relay rewrites `descriptor.label` to the container-derived name for consistent UI display. |
-| POST | `/v1/environments/:id/connect` | Bearer | Return `{ environmentId, endpoint, credential, expiresAt }`. `environmentId` must match the listed environment id. Since surface B already injects `X-Relay-Secret`, `credential` is a non-secret marker (the server trusts the relay-injected header); the client uses `endpoint` to open its session over surface B. |
+| POST | `/v1/environments/:id/connect` | Bearer | Return `{ environmentId, endpoint, credential, expiresAt }`. `environmentId` must match the listed environment id. The relay mints a short-lived pairing credential from the environment server over Docker networking using `X-Relay-Secret`; the client then exchanges that credential directly with `endpoint`. |
 | GET | `/v1/environments/:id/exposures` | Bearer or `X-Relay-Secret` | List non-expired on-demand port exposures for one environment. |
 | POST | `/v1/environments/:id/exposures` | Bearer or `X-Relay-Secret` | Register or refresh an on-demand port exposure. Body: `{ port, name?, scheme?, ttlSeconds? }`. `scheme` currently supports only `http`; `ttlSeconds` defaults to 3600 and is capped at 86400. Returns `{ environmentId, name, host, url, scheme, port, expiresAt }`. |
 | DELETE | `/v1/environments/:id/exposures/:name` | Bearer or `X-Relay-Secret` | Remove one on-demand exposure from an environment. |
@@ -394,6 +394,11 @@ Schema source: `packages/contracts/src/relay.ts:707-715` (`RelayEnvironmentStatu
 
 **Self-hosted relay implementation**: Instead of the JWT-proof handshake, probe `GET /.well-known/t3/environment` on the container (using `X-Relay-Secret` header) to populate `descriptor` and confirm `status: "online"`.
 
+The descriptor may include `advertisedEndpoints`. When an endpoint is available,
+uses HTTPS, and is identified as Tailscale/private-network reachability, the
+relay returns that direct endpoint to clients with provider kind `manual`.
+Otherwise the relay returns the existing relay-proxied `t3_relay` endpoint.
+
 ---
 
 ### Environment Connect (Get Session Credential)
@@ -412,7 +417,7 @@ Body:
 }
 ```
 
-Relay internally calls `POST /api/t3-connect/mint-credential` on the environment server with a JWT proof. The environment server mints a 2-minute pairing credential and returns it.
+Relay internally calls `POST /api/auth/pairing-token` on the environment server with `X-Relay-Secret`. The environment server mints a short-lived pairing credential and returns it.
 
 Response: 200
 ```json
@@ -421,7 +426,7 @@ Response: 200
   "endpoint": {
     "httpBaseUrl": "https://...",
     "wsBaseUrl": "wss://...",
-    "providerKind": "cloudflare_tunnel"
+    "providerKind": "manual"
   },
   "credential": "<12-char-pairing-token>",
   "expiresAt": "2026-01-01T00:02:00.000Z"
@@ -430,7 +435,7 @@ Response: 200
 
 Schema source: `packages/contracts/src/relay.ts:696-702` (`RelayEnvironmentConnectResponse`)
 
-**Self-hosted relay implementation**: Instead of the signed JWT mint flow, the relay can directly call `POST /oauth/token` on the environment server (using `X-Relay-Secret` for auth) to issue a session token, or call the server's `/api/auth/pairing-token` endpoint to generate a short-lived pairing credential. Return the credential to the client.
+**Self-hosted relay implementation**: Instead of the signed JWT mint flow, the relay calls the server's `/api/auth/pairing-token` endpoint with `X-Relay-Secret` to generate a short-lived pairing credential. Return the credential to the client.
 
 The client then exchanges the credential directly with the environment server:
 ```
