@@ -31,7 +31,8 @@ dependency has been resolved, which should never happen in normal usage.
 | Option       | Type   | Default                      | Description |
 |---|---|---|---|
 | `version`    | string | `latest`                     | Artifact release tag to install. `latest` pulls the most recent published release. Pin to a specific tag (e.g. `t3code-server-v1.2.3`) for reproducibility. |
-| `port`       | string | `3773`                       | Port the server binds on (`0.0.0.0:<port>`). Caddy reaches the server on the `dev-ingress` network at this port. |
+| `port`       | string | `3773`                       | Port the server binds on. Caddy reaches the server on the shared Docker network at this port. |
+| `host`       | string | `0.0.0.0`                    | Host/interface the server binds to. The default lets the relay probe it from the shared Docker network. |
 | `secretPath` | string | `/run/t3code/relay-secret`   | Path **inside the container** where the shared relay-secret file is bind-mounted from the host. Must match the `target` of the `mounts` entry in your `devcontainer.json`. |
 | `baseDir` | string | empty | Explicit T3 server state directory (`T3CODE_HOME`). Takes precedence over `stateParentDir` and any existing `T3CODE_HOME`. |
 | `stateParentDir` | string | empty | Durable parent directory for T3 server state. When set, the feature uses `<stateParentDir>/<DEVCONTAINER_ID-or-HOSTNAME>` as `T3CODE_HOME`. |
@@ -285,15 +286,15 @@ Override `sshAuthSock` only if another process already owns the default path.
    (`boblangley/t3code-devcontainer-relay`) for the detected arch
    (`linux-amd64` or `linux-arm64`, glibc).
 3. Extracts it to `/usr/local/lib/t3code-server`.
-4. Installs s6-overlay and, when enabled, the Tailscale CLI/daemon.
+4. Installs the Tailscale CLI/daemon when enabled.
 5. Installs the T3 server, Tailscale, and SSH socket watcher run scripts under
    `/usr/local/share`.
-6. Installs s6 service definitions under `/etc/services.d`.
-7. Installs the `t3relay` helper to `/usr/local/bin/t3relay`.
-8. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
+6. Installs the `t3relay` helper to `/usr/local/bin/t3relay`.
+7. Writes resolved feature options to `/usr/local/etc/t3code-server.env` so the
    runtime scripts can source them without re-parsing `devcontainer.json`.
 
-The devcontainer entrypoint is `/init` from s6-overlay. s6 supervises:
+The devcontainer feature entrypoint is
+`/usr/local/share/t3code-entrypoint.sh`. It starts:
 
 | Service | Purpose |
 |---|---|
@@ -309,14 +310,16 @@ must match what the forked server reads (defined in `vendor-t3code`'s
 
 | Variable | Purpose |
 |---|---|
-| `PORT` | TCP port (`0.0.0.0:PORT`) |
+| `PORT` | TCP port |
+| `T3CODE_HOST` | Host/interface the server binds to |
 | `T3CODE_HOME` | Base directory for server state when configured or inherited |
 | `T3CODE_RELAY_SECRET_FILE` | Filesystem path to the shared-secret file |
 | `T3CODE_TAILSCALE_SERVE` | Enables the server's Tailscale Serve integration |
 | `T3CODE_TAILSCALE_SERVE_PORT` | HTTPS port for Tailscale Serve |
 | `T3CODE_TAILNET_DNS_NAME` | Optional MagicDNS name advertised in the environment descriptor |
 
-Service logs are written to the container output stream through s6.
+Service logs are written to `/tmp/t3code-server.log`,
+`/tmp/tailscaled.log`, and `/tmp/t3code-ssh-auth-sock-watcher.log`.
 
 ## Artifact URL convention
 
@@ -348,7 +351,12 @@ naming changes, update the `ASSET_NAME` variable in `install.sh` to match.
 
 ## Supervision notes
 
-The feature uses s6-overlay because it now owns more than one long-running
-process: the T3 server, `tailscaled`, and the SSH agent socket watcher. This
-keeps restart behavior and logs in the container supervisor instead of a custom
-Bash restart loop.
+The feature uses a normal devcontainer feature entrypoint at
+`/usr/local/share/t3code-entrypoint.sh`. Devcontainer entrypoints are composed
+into a shell chain with entrypoints from other features, so this feature cannot
+require `/init` to run as PID 1.
+
+The entrypoint starts `tailscaled` and `/usr/local/share/t3code-supervise.sh`
+in the background, then returns to the composed devcontainer entrypoint chain.
+The supervisor runs the T3 server in a restart loop, starts the SSH agent socket
+watcher, and logs to `/tmp/t3code-server.log`.

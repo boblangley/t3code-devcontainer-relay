@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# t3code-supervise.sh — devcontainer entrypoint + restart-loop supervisor
+# t3code-supervise.sh — restart-loop supervisor
 #
-# Role: devcontainer entrypoint (declared in devcontainer-feature.json as
-# "entrypoint").  The devcontainer CLI launches this script with the
-# container's original CMD as positional arguments ("$@").  The standard
-# pattern for a feature entrypoint is:
-#   1. Start any background processes.
-#   2. exec "$@" to hand off to the container's own command (or sleep infinity
-#      if no command was provided), so the container stays alive.
+# Role: background supervisor started by /usr/local/share/t3code-entrypoint.sh.
+# The devcontainer CLI composes feature entrypoints into a shell chain, so the
+# actual feature entrypoint starts this script in the background and then
+# returns control to the rest of the chain.
 #
 # NOTE: s6-overlay was evaluated for supervision and rejected as overkill for
 # supervising a single process.  If a second supervised process is ever added
@@ -15,9 +12,7 @@
 #
 # Supervision strategy: a simple while-true restart loop with exponential
 # backoff (capped), logging to /tmp/t3code-server.log, guarded by a PID file
-# so a container restart (which re-runs the entrypoint) does not spawn a
-# duplicate server if one is already running from a previous entrypoint
-# invocation in the same container instance.
+# so a repeated feature entrypoint invocation does not spawn a duplicate server.
 
 # Do NOT use set -e here: this is an entrypoint / supervisor script where we
 # intentionally continue past non-zero exit codes (process restarts, PID checks).
@@ -40,12 +35,17 @@ fi
 # Fall back to defaults if the env file was missing or incomplete.
 T3CODE_INSTALL_DIR="${T3CODE_INSTALL_DIR:-/usr/local/lib/t3code-server}"
 T3CODE_PORT="${T3CODE_PORT:-3773}"
+T3CODE_HOST="${T3CODE_HOST:-0.0.0.0}"
 T3CODE_SECRETPATH="${T3CODE_SECRETPATH:-/run/t3code/relay-secret}"
 T3CODE_BASEDIR="${T3CODE_BASEDIR:-}"
 T3CODE_STATEPARENTDIR="${T3CODE_STATEPARENTDIR:-}"
 T3CODE_WORKSPACEHOME="${T3CODE_WORKSPACEHOME:-}"
 T3CODE_RUNASUSER="${T3CODE_RUNASUSER:-vscode}"
 T3CODE_SSHAUTHSOCK="${T3CODE_SSHAUTHSOCK:-/tmp/vscode-ssh-agent.sock}"
+T3CODE_TAILSCALE_ENABLED="${T3CODE_TAILSCALE_ENABLED:-true}"
+T3CODE_TAILSCALE_AUTHKEY_PATH="${T3CODE_TAILSCALE_AUTHKEY_PATH:-/run/t3code/tailscale-authkey}"
+T3CODE_TAILSCALE_SERVE_ENABLED="${T3CODE_TAILSCALE_SERVE_ENABLED:-true}"
+T3CODE_TAILSCALE_SERVE_PORT="${T3CODE_TAILSCALE_SERVE_PORT:-443}"
 
 # ---------------------------------------------------------------------------
 # Env vars passed to the t3code server process
@@ -78,6 +78,7 @@ T3CODE_SSHAUTHSOCK="${T3CODE_SSHAUTHSOCK:-/tmp/vscode-ssh-agent.sock}"
 # ---------------------------------------------------------------------------
 
 SERVER_PORT="${T3CODE_PORT}"
+SERVER_HOST="${T3CODE_HOST}"
 SERVER_SECRET_FILE="${T3CODE_SECRETPATH}"
 SERVER_NODE_BIN="$(command -v node 2>/dev/null || true)"
 
@@ -133,8 +134,53 @@ _resolve_workspace_home() {
     fi
 }
 
+_resolve_tailscale_dns_name() {
+    if _is_non_empty "${T3CODE_TAILNET_DNS_NAME:-}"; then
+        printf '%s' "${T3CODE_TAILNET_DNS_NAME}"
+        return 0
+    fi
+
+    if [ "${T3CODE_TAILSCALE_ENABLED}" != "true" ] || ! command -v tailscale >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local status_json
+    status_json="$(tailscale status --json 2>/dev/null || true)"
+    if ! _is_non_empty "${status_json}"; then
+        return 0
+    fi
+
+    node -e '
+const raw = process.argv[1] || "";
+try {
+  const parsed = JSON.parse(raw);
+  const dnsName = String(parsed?.Self?.DNSName || "").trim().replace(/\.$/u, "");
+  if (dnsName) process.stdout.write(dnsName);
+} catch {}
+' "${status_json}"
+}
+
+_wait_for_tailscale_dns_name() {
+    local dns_name
+    local attempts=30
+    while [ "${attempts}" -gt 0 ]; do
+        dns_name="$(_resolve_tailscale_dns_name)"
+        if _is_non_empty "${dns_name}"; then
+            printf '%s' "${dns_name}"
+            return 0
+        fi
+        attempts=$((attempts - 1))
+        sleep 1
+    done
+}
+
 SERVER_T3CODE_HOME="$(_resolve_t3code_home)"
 SERVER_WORKSPACE_HOME="$(_resolve_workspace_home)"
+if _is_non_empty "${T3CODE_TAILNET_DNS_NAME:-}" || { [ "${T3CODE_TAILSCALE_ENABLED}" = "true" ] && [ -r "${T3CODE_TAILSCALE_AUTHKEY_PATH}" ]; }; then
+    SERVER_TAILNET_DNS_NAME="$(_wait_for_tailscale_dns_name)"
+else
+    SERVER_TAILNET_DNS_NAME=""
+fi
 SERVER_RUN_AS_USER="${T3CODE_RUNASUSER}"
 SERVER_SSH_AUTH_SOCK="${T3CODE_SSHAUTHSOCK}"
 
@@ -222,7 +268,10 @@ _run_server_command() {
     local server_args=("$@")
     local env_args=(
         "PORT=${SERVER_PORT}"
+        "T3CODE_HOST=${SERVER_HOST}"
         "T3CODE_RELAY_SECRET_FILE=${SERVER_SECRET_FILE}"
+        "T3CODE_TAILSCALE_SERVE=${T3CODE_TAILSCALE_SERVE_ENABLED}"
+        "T3CODE_TAILSCALE_SERVE_PORT=${T3CODE_TAILSCALE_SERVE_PORT}"
     )
 
     if _is_non_empty "${SERVER_SSH_AUTH_SOCK}"; then
@@ -231,6 +280,10 @@ _run_server_command() {
 
     if _is_non_empty "${SERVER_T3CODE_HOME}"; then
         env_args+=("T3CODE_HOME=${SERVER_T3CODE_HOME}")
+    fi
+
+    if _is_non_empty "${SERVER_TAILNET_DNS_NAME}"; then
+        env_args+=("T3CODE_TAILNET_DNS_NAME=${SERVER_TAILNET_DNS_NAME}")
     fi
 
     if [ "$(id -u)" -eq 0 ] && _run_as_user_exists; then
@@ -313,7 +366,7 @@ _run_supervisor() {
     local backoff=1
     local max_backoff=30
 
-    echo "[t3code-supervise] Supervisor started (PID ${BASHPID}, port=${SERVER_PORT}, secretPath=${SERVER_SECRET_FILE}, t3codeHome=${SERVER_T3CODE_HOME:-<server-default>}, workspaceHome=${SERVER_WORKSPACE_HOME:-<server-default>}, runAsUser=${SERVER_RUN_AS_USER:-<entrypoint-user>}, sshAuthSock=${SERVER_SSH_AUTH_SOCK:-<disabled>})" >> "${LOG_FILE}" 2>&1
+    echo "[t3code-supervise] Supervisor started (PID ${BASHPID}, host=${SERVER_HOST}, port=${SERVER_PORT}, secretPath=${SERVER_SECRET_FILE}, t3codeHome=${SERVER_T3CODE_HOME:-<server-default>}, workspaceHome=${SERVER_WORKSPACE_HOME:-<server-default>}, tailnetDnsName=${SERVER_TAILNET_DNS_NAME:-<unavailable>}, runAsUser=${SERVER_RUN_AS_USER:-<entrypoint-user>}, sshAuthSock=${SERVER_SSH_AUTH_SOCK:-<disabled>})" >> "${LOG_FILE}" 2>&1
 
     while true; do
         if [ -z "${SERVER_ENTRYPOINT}" ]; then

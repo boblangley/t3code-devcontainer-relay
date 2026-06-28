@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -191,12 +192,25 @@ func envIDFromEnvironmentPath(path string) string {
 	return id
 }
 
-// environmentEndpoint builds the endpoint object for an environment.
-func environmentEndpoint(app *RelayApp, env Environment) map[string]string {
-	if endpoint, ok := advertisedTailnetEndpoint(env.ProbeJSON); ok {
-		return endpoint
+// environmentEndpointForRequest builds the endpoint object for an environment.
+//
+// Requests that enter through the embedded tsnet listener are bridged back into
+// the local HTTPS listener as a loopback TCP connection. Those clients can
+// reach private tailnet endpoints, so prefer an advertised tailnet endpoint
+// when one is available. Requests that enter through the normal published Caddy
+// listener must stay on the relay/Caddy endpoint so local machines without a
+// Tailscale client can still connect.
+func environmentEndpointForRequest(app *RelayApp, env Environment, r *http.Request) map[string]string {
+	if requestEnteredThroughTailnetBridge(r) {
+		if endpoint, ok := advertisedTailnetEndpoint(env.ProbeJSON); ok {
+			return endpoint
+		}
 	}
 
+	return relayEndpoint(app, env)
+}
+
+func relayEndpoint(app *RelayApp, env Environment) map[string]string {
 	host := app.PublishedHostname(env.Name)
 	if host == "" {
 		host = env.Hostname
@@ -206,6 +220,20 @@ func environmentEndpoint(app *RelayApp, env Environment) map[string]string {
 		"wsBaseUrl":    "wss://" + host,
 		"providerKind": "t3_relay",
 	}
+}
+
+func requestEnteredThroughTailnetBridge(r *http.Request) bool {
+	host := strings.TrimSpace(r.RemoteAddr)
+	if host == "" {
+		return false
+	}
+
+	if remoteHost, _, err := net.SplitHostPort(host); err == nil {
+		host = remoteHost
+	}
+
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 type advertisedEndpointProbe struct {
@@ -353,7 +381,7 @@ func (a *APIHandler) handleListEnvironments(w http.ResponseWriter, r *http.Reque
 		records = append(records, envRecord{
 			EnvironmentID: relayEnvironmentID(e),
 			Label:         relayEnvironmentLabel(e),
-			Endpoint:      environmentEndpoint(a.app, e),
+			Endpoint:      environmentEndpointForRequest(a.app, e, r),
 			LinkedAt:      linkedAt,
 		})
 	}
@@ -405,7 +433,7 @@ func (a *APIHandler) handleEnvironmentStatus(w http.ResponseWriter, r *http.Requ
 	responseEnvironmentID := relayEnvironmentID(env)
 	resp := map[string]any{
 		"environmentId": responseEnvironmentID,
-		"endpoint":      environmentEndpoint(a.app, env),
+		"endpoint":      environmentEndpointForRequest(a.app, env, r),
 		"status":        status,
 		"checkedAt":     time.Now().UTC().Format(time.RFC3339),
 	}
@@ -682,7 +710,7 @@ func (a *APIHandler) handleEnvironmentConnect(w http.ResponseWriter, r *http.Req
 
 	return writeJSON(w, http.StatusOK, map[string]any{
 		"environmentId": relayEnvironmentID(env),
-		"endpoint":      environmentEndpoint(a.app, env),
+		"endpoint":      environmentEndpointForRequest(a.app, env, r),
 		"credential":    credential.Credential,
 		"expiresAt":     credential.ExpiresAt,
 	})

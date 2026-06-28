@@ -29,7 +29,7 @@ The module exposes two surfaces on one Caddy instance (one listener, :443):
 | Method | Path | Auth | Behaviour |
 |---|---|---|---|
 | GET | `/health` | none | `{ "ok": true, "service": "relay" }` |
-| GET | `/v1/environments` | Bearer | List environments from SQLite. Each record matches contracts `RelayClientEnvironmentRecord` exactly: `{ environmentId, label, endpoint, linkedAt }` — `environmentId` is the T3 server descriptor id from `/.well-known/t3/environment` when available, while the relay may keep a separate internal devcontainer row key. `label` is the relay's container-derived name (`t3relay.host` override or Docker container name), never the server probe label. `label` and `linkedAt` are non-empty (the client decodes with Effect Schema). `endpoint` prefers an available Tailscale HTTPS endpoint advertised by the environment descriptor and otherwise falls back to `https://<name>.t3.<domain>` (surface B). Per-environment status/platform are read from `/status`, not this record. |
+| GET | `/v1/environments` | Bearer | List environments from SQLite. Each record matches contracts `RelayClientEnvironmentRecord` exactly: `{ environmentId, label, endpoint, linkedAt }` — `environmentId` is the T3 server descriptor id from `/.well-known/t3/environment` when available, while the relay may keep a separate internal devcontainer row key. `label` is the relay's container-derived name (`t3relay.host` override or Docker container name), never the server probe label. `label` and `linkedAt` are non-empty (the client decodes with Effect Schema). `endpoint` is context-aware: requests that entered through the embedded tailnet bridge prefer an available Tailscale HTTPS endpoint advertised by the environment descriptor; normal published Caddy ingress returns `https://<name>.t3.<domain>` (surface B). Per-environment status/platform are read from `/status`, not this record. |
 | POST | `/v1/environments/:id/status` | Bearer | Probe the container (`GET /.well-known/t3/environment` with `X-Relay-Secret`); return `{ environmentId, endpoint, status: online\|offline, checkedAt, descriptor }`. `environmentId` must match the listed environment id and, when present, `descriptor.environmentId`. The relay rewrites `descriptor.label` to the container-derived name for consistent UI display. |
 | POST | `/v1/environments/:id/connect` | Bearer | Return `{ environmentId, endpoint, credential, expiresAt }`. `environmentId` must match the listed environment id. The relay mints a short-lived pairing credential from the environment server over Docker networking using `X-Relay-Secret`; the client then exchanges that credential directly with `endpoint`. |
 | GET | `/v1/environments/:id/exposures` | Bearer or `X-Relay-Secret` | List non-expired on-demand port exposures for one environment. |
@@ -95,7 +95,10 @@ t3code-relay (Caddy module)   <-- implements this API
 t3code server (apps/server)  running inside devcontainer, port 3773
 ```
 
-The relay acts as a control plane. Actual application traffic (WebSocket RPC) flows **directly** between the client and the environment server after the client has obtained an environment credential from the relay.
+The relay acts as a control plane. Actual application traffic (WebSocket RPC)
+uses the endpoint selected for the request context: local/non-tailnet clients
+stay on the Caddy relay endpoint, while tailnet clients may go directly to an
+advertised private-network endpoint after obtaining an environment credential.
 
 ---
 

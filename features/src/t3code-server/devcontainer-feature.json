@@ -1,6 +1,6 @@
 {
   "id": "t3code-server",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "name": "T3Code Server (forked, bearer-auth)",
   "description": "Installs and supervises the forked T3Code server (bearer-auth branch) inside a devcontainer. The server listens on 0.0.0.0:<port> and validates inbound relay requests via a shared-secret file bind-mounted from the host.",
   "documentationURL": "https://github.com/boblangley/t3code-devcontainer-relay/tree/main/features/src/t3code-server",
@@ -14,6 +14,11 @@
       "type": "string",
       "default": "3773",
       "description": "Port the t3code server will bind on (0.0.0.0:<port>). Caddy reaches the server on dev-ingress at this port. String type is used for safe substitution in the env file sourced by the supervise script."
+    },
+    "host": {
+      "type": "string",
+      "default": "0.0.0.0",
+      "description": "Host/interface the t3code server binds to. Defaults to 0.0.0.0 so the relay can probe the server from the shared Docker network."
     },
     "secretPath": {
       "type": "string",
@@ -89,6 +94,6 @@
   "installsAfter": [
     "ghcr.io/devcontainers/features/node"
   ],
-  "entrypoint": "/init",
+  "entrypoint": "/usr/local/share/t3code-entrypoint.sh",
   "customizations": {}
 }

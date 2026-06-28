@@ -5,6 +5,7 @@
 # are injected as environment variables by the CLI (uppercased option IDs):
 #   VERSION        — artifact tag, default "latest"
 #   PORT           — listen port, default "3773"
+#   HOST           — bind host, default "0.0.0.0"
 #   SECRETPATH     — secret file path, default "/run/t3code/relay-secret"
 #   BASEDIR        — explicit T3CODE_HOME override, default ""
 #   STATEPARENTDIR — durable parent for per-devcontainer T3CODE_HOME, default ""
@@ -37,6 +38,7 @@ info() { echo "INFO  [t3code-server feature]: $*"; }
 # overwrite the devcontainer feature's `version` option.
 FEATURE_VERSION="${VERSION:-latest}"
 FEATURE_PORT="${PORT:-3773}"
+FEATURE_HOST="${HOST:-0.0.0.0}"
 FEATURE_SECRETPATH="${SECRETPATH:-/run/t3code/relay-secret}"
 FEATURE_BASEDIR="${BASEDIR:-}"
 FEATURE_STATEPARENTDIR="${STATEPARENTDIR:-}"
@@ -85,6 +87,7 @@ info "Node check passed: ${NODE_VERSION}"
 
 VERSION="${FEATURE_VERSION}"
 PORT="${FEATURE_PORT}"
+HOST="${FEATURE_HOST}"
 SECRETPATH="${FEATURE_SECRETPATH}"
 BASEDIR="${FEATURE_BASEDIR}"
 STATEPARENTDIR="${FEATURE_STATEPARENTDIR}"
@@ -99,7 +102,7 @@ TAILSCALESERVE="${FEATURE_TAILSCALESERVE}"
 TAILSCALESERVEPORT="${FEATURE_TAILSCALESERVEPORT}"
 TAILNETDNSNAME="${FEATURE_TAILNETDNSNAME}"
 
-info "Installing t3code-server version='${VERSION}' port='${PORT}' secretPath='${SECRETPATH}'"
+info "Installing t3code-server version='${VERSION}' host='${HOST}' port='${PORT}' secretPath='${SECRETPATH}'"
 if [ -n "${BASEDIR}" ]; then
     info "Using explicit baseDir='${BASEDIR}'"
 elif [ -n "${STATEPARENTDIR}" ]; then
@@ -141,23 +144,8 @@ esac
 info "Target architecture: ${ARCH}"
 
 # ---------------------------------------------------------------------------
-# Install s6-overlay and Tailscale
+# Install Tailscale
 # ---------------------------------------------------------------------------
-
-S6_OVERLAY_VERSION="3.2.0.3"
-case "${UNAME_M}" in
-    x86_64)   S6_ARCH="x86_64" ;;
-    aarch64)  S6_ARCH="aarch64" ;;
-    *)        err "Unsupported architecture for s6-overlay: ${UNAME_M}" ;;
-esac
-
-if [ ! -x /init ]; then
-    info "Installing s6-overlay ${S6_OVERLAY_VERSION} ..."
-    curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
-        | tar -C / -Jxpf -
-    curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
-        | tar -C / -Jxpf -
-fi
 
 if [ "${TAILSCALE}" = "true" ] && ! command -v tailscale >/dev/null 2>&1; then
     info "Installing Tailscale ..."
@@ -240,6 +228,10 @@ info "Server installed to ${INSTALL_DIR}"
 
 SERVER_RUN_SRC="${FEATURE_DIR}/t3code-server-run.sh"
 SERVER_RUN_DEST="/usr/local/share/t3code-server-run.sh"
+ENTRYPOINT_SRC="${FEATURE_DIR}/t3code-entrypoint.sh"
+ENTRYPOINT_DEST="/usr/local/share/t3code-entrypoint.sh"
+SUPERVISE_SRC="${FEATURE_DIR}/t3code-supervise.sh"
+SUPERVISE_DEST="/usr/local/share/t3code-supervise.sh"
 SSH_WATCHER_SRC="${FEATURE_DIR}/t3code-ssh-auth-sock-watcher.sh"
 SSH_WATCHER_DEST="/usr/local/share/t3code-ssh-auth-sock-watcher.sh"
 TAILSCALED_RUN_SRC="${FEATURE_DIR}/tailscaled-run.sh"
@@ -249,41 +241,20 @@ TAILSCALE_UP_DEST="/usr/local/share/tailscale-up.sh"
 HELPER_SRC="${FEATURE_DIR}/t3relay"
 HELPER_DEST="/usr/local/bin/t3relay"
 
-for script in "${SERVER_RUN_SRC}" "${SSH_WATCHER_SRC}" "${TAILSCALED_RUN_SRC}" "${TAILSCALE_UP_SRC}"; do
+for script in "${SERVER_RUN_SRC}" "${ENTRYPOINT_SRC}" "${SUPERVISE_SRC}" "${SSH_WATCHER_SRC}" "${TAILSCALED_RUN_SRC}" "${TAILSCALE_UP_SRC}"; do
     if [ ! -f "${script}" ]; then
         err "$(basename "${script}") not found at expected path '${script}'. This is a feature packaging error."
     fi
 done
 
 cp "${SERVER_RUN_SRC}" "${SERVER_RUN_DEST}"
+cp "${ENTRYPOINT_SRC}" "${ENTRYPOINT_DEST}"
+cp "${SUPERVISE_SRC}" "${SUPERVISE_DEST}"
 cp "${SSH_WATCHER_SRC}" "${SSH_WATCHER_DEST}"
 cp "${TAILSCALED_RUN_SRC}" "${TAILSCALED_RUN_DEST}"
 cp "${TAILSCALE_UP_SRC}" "${TAILSCALE_UP_DEST}"
-chmod +x "${SERVER_RUN_DEST}" "${SSH_WATCHER_DEST}" "${TAILSCALED_RUN_DEST}" "${TAILSCALE_UP_DEST}"
+chmod +x "${SERVER_RUN_DEST}" "${ENTRYPOINT_DEST}" "${SUPERVISE_DEST}" "${SSH_WATCHER_DEST}" "${TAILSCALED_RUN_DEST}" "${TAILSCALE_UP_DEST}"
 info "Runtime scripts installed to /usr/local/share"
-
-mkdir -p /etc/services.d/tailscaled /etc/services.d/t3code-server
-cat > /etc/services.d/tailscaled/run <<'EOF'
-#!/usr/bin/execlineb -P
-/usr/local/share/tailscaled-run.sh
-EOF
-chmod +x /etc/services.d/tailscaled/run
-
-cat > /etc/services.d/t3code-server/run <<'EOF'
-#!/usr/bin/execlineb -P
-/usr/local/share/t3code-server-run.sh
-EOF
-chmod +x /etc/services.d/t3code-server/run
-
-if [ -n "${SSHAUTHSOCK}" ]; then
-    mkdir -p /etc/services.d/t3code-ssh-auth-sock-watcher
-    cat > /etc/services.d/t3code-ssh-auth-sock-watcher/run <<'EOF'
-#!/usr/bin/execlineb -P
-/usr/local/share/t3code-ssh-auth-sock-watcher.sh
-EOF
-    chmod +x /etc/services.d/t3code-ssh-auth-sock-watcher/run
-fi
-info "s6 services installed"
 
 if [ ! -f "${HELPER_SRC}" ]; then
     err "t3relay helper not found at expected path '${HELPER_SRC}'. This is a feature packaging error."
@@ -308,6 +279,7 @@ cat > /usr/local/etc/t3code-server.env <<EOF
 
 T3CODE_INSTALL_DIR="${INSTALL_DIR}"
 T3CODE_PORT="${PORT}"
+T3CODE_HOST="${HOST}"
 T3CODE_SECRETPATH="${SECRETPATH}"
 T3CODE_VERSION="${VERSION}"
 T3CODE_BASEDIR="${BASEDIR}"

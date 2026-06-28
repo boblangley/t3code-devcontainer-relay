@@ -64,6 +64,18 @@ check "supervise script is installed" \
 check "supervise script is executable" \
     test -x /usr/local/share/t3code-supervise.sh
 
+check "entrypoint script is installed" \
+    test -f /usr/local/share/t3code-entrypoint.sh
+
+check "entrypoint script is executable" \
+    test -x /usr/local/share/t3code-entrypoint.sh
+
+check "tailscaled runner is installed" \
+    test -f /usr/local/share/tailscaled-run.sh
+
+check "tailscaled runner is executable" \
+    test -x /usr/local/share/tailscaled-run.sh
+
 check "t3relay helper is installed" \
     test -f /usr/local/bin/t3relay
 
@@ -80,6 +92,9 @@ check "env file is readable" \
 # which depend on feature option overrides at test invocation time).
 check "env file contains T3CODE_PORT" \
     grep -q "T3CODE_PORT" /usr/local/etc/t3code-server.env
+
+check "env file contains T3CODE_HOST" \
+    grep -q "T3CODE_HOST" /usr/local/etc/t3code-server.env
 
 check "env file contains T3CODE_SECRETPATH" \
     grep -q "T3CODE_SECRETPATH" /usr/local/etc/t3code-server.env
@@ -125,8 +140,17 @@ check "env file contains T3CODE_SSHAUTHSOCK" \
 check "supervise script has valid bash syntax" \
     bash -n /usr/local/share/t3code-supervise.sh
 
+check "entrypoint script has valid bash syntax" \
+    bash -n /usr/local/share/t3code-entrypoint.sh
+
+check "entrypoint does not require s6 init" \
+    bash -c '! grep -q "/init" /usr/local/share/t3code-entrypoint.sh'
+
 check "supervise script exports SSH_AUTH_SOCK" \
     grep -q "SSH_AUTH_SOCK" /usr/local/share/t3code-supervise.sh
+
+check "supervise script passes T3CODE_HOST" \
+    grep -q "T3CODE_HOST" /usr/local/share/t3code-supervise.sh
 
 check "supervise script watches VS Code SSH agent socket" \
     grep -q "vscode-ssh-auth-.*\\.sock" /usr/local/share/t3code-supervise.sh
