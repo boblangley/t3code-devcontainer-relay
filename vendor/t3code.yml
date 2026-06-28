@@ -11,8 +11,8 @@ upstreamRepository: pingdotgg/t3code
 upstreamVersion: 0.0.27
 forkRepository: boblangley/t3code
 forkBranch: bearer-auth
-forkTag: t3code-0.0.27-boblangley.4
-forkCommit: 853c7c4e89a2ba9a76acb9de91e35545190202da
-releaseVersion: 0.0.27-boblangley.4
-releaseMilestone: t3code-0.0.27-boblangley.4
+forkTag: t3code-0.0.27-boblangley.5
+forkCommit: bd7f6050cdcf92b99fddb32795edc7c40d7a055b
+releaseVersion: 0.0.27-boblangley.5
+releaseMilestone: t3code-0.0.27-boblangley.5
 intendedForkTagFormat: t3code-<upstreamVersion>-boblangley.<revision>
